@@ -1,0 +1,25 @@
+basic {"phase":1,"charges":5,"t":0} phase,charges,t true
+override-first {"charges":12,"phase":1,"t":0} charges,phase,t true
+two-spreads {"phase":1,"charges":12,"t":7,"extra":"e"} phase,charges,t,extra true
+prop-get {"deep":{"k":1},"z":1} deep,z true
+identity true true
+independent-src {"v":{"id":1},"w":[1,2]} v,w true
+independent-clone {"v":{"id":2},"w":[1,2],"added":true} v,w,added true
+getter {"a":1,"g":5} getter {"value":5,"writable":true,"enumerable":true,"configurable":true}
+symbol 2 1 {"a":1}
+non-enumerable {"a":1,"b":2} a,b true
+proto-setter 1 true false
+class-src {"x":1,"y":2} false undefined
+null-src {}  true
+undef-src {}  true
+array-src {"0":1,"1":2} 0,1 true
+string-src {"0":"a","1":"b"} 0,1 true
+numeric-keys {"0":"z","1":"a","b":2} 0,1,b true
+frozen-src {"f":9,"g":2} false true
+proto-src {"own":2} own true
+deleted-key {"a":1,"c":3} a,c true
+wide 40 0 39
+one-key {"a":1,"b":2,"c":3,"d":4} a,b,c,d true
+empty-src {"x":1} x true
+gc 39999800000 200 39800400
+internal-key-name {"__perry_wk_entries":1,"ok":2} __perry_wk_entries,ok true

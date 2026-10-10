@@ -1246,6 +1246,22 @@ pub(crate) fn small_handle_symbol_owner_ever() -> bool {
 /// Note a symbol-keyed install on `obj_key`. Must be called BEFORE the table
 /// insert in every install funnel (same ordering argument as
 /// [`note_symbol_key_installed`]).
+/// No own symbol-keyed property (data or accessor placeholder) is recorded
+/// for the heap object at `obj_key` outside its own key list. A shaped
+/// object keeps its symbol keys in that list (the caller checks it); any
+/// other holder, or an entry in the side table, answers `false`. One map
+/// probe; allocates nothing.
+pub(crate) unsafe fn object_has_no_own_symbols(obj_key: usize) -> bool {
+    if let Some(holder) = crate::object::shaped_symbols::owner(obj_key) {
+        return holder as usize == obj_key;
+    }
+    let guard = crate::gc::lock_gc_root_registry(&SYMBOL_PROPERTIES);
+    guard
+        .as_ref()
+        .and_then(|m| m.get(&obj_key))
+        .is_none_or(|entries| entries.is_empty())
+}
+
 pub(crate) fn note_symbol_owner_installed(obj_key: usize) {
     // Arrays carry own-key/prototype identity in their existing receiver-local
     // shape word. Publish the transition before the side-table entry so array

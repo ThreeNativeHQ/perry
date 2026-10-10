@@ -2620,6 +2620,7 @@ js_object_shape_id_for_class_keys	i32u	i64,i32u,i32u,i64
 js_object_shape_id_for_class_keys_live	i32u	i64,i32u,i32u,i32u,i64
 js_object_shape_id_for_class_keys_static	i32u	i64,i32u,i32u,i32u,i32u,i64
 js_object_shape_id_for_keys	i32u	i64,i32u
+js_object_spread_clone	f64	f64
 js_object_super_call	f64	f64,f64,f64,ptr,usize
 js_object_super_get	f64	f64,f64,f64
 js_object_super_put_value_set	f64	f64,f64,f64,f64,i32s

@@ -1349,6 +1349,25 @@ pub(super) fn lower_object(ctx: &mut LoweringContext, obj: &ast::ObjectLit) -> R
             type_args: Vec::new(),
             byte_offset: 0,
         };
+        // A leading spread of a plain read becomes the seed itself: the
+        // runtime clones a plain source in one step instead of defining each
+        // key on `{}`. The read moves out of the IIFE, which only reorders
+        // it before the unobservable `{}` allocation.
+        let mut ops = ops;
+        let is_leaf_read = |e: &Expr| matches!(e, Expr::LocalGet(_) | Expr::GlobalGet(_));
+        let spread_seed = match ops.first() {
+            Some(SpreadOp::Assign { src })
+                if static_shape_seed.is_none()
+                    && (is_leaf_read(src)
+                        || matches!(src, Expr::PropertyGet { object, .. } if is_leaf_read(object))) =>
+            {
+                let Some(SpreadOp::Assign { src }) = Some(ops.remove(0)) else {
+                    unreachable!("matched a leading spread above")
+                };
+                Some(extern_call("js_object_spread_clone", vec![src]))
+            }
+            _ => None,
+        };
         let mut body: Vec<Stmt> = Vec::with_capacity(ops.len() * 4 + 1);
         let mut inner_local_ids = vec![param_id];
         for op in ops {
@@ -1497,7 +1516,9 @@ pub(super) fn lower_object(ctx: &mut LoweringContext, obj: &ast::ObjectLit) -> R
         };
         return Ok(Expr::Call {
             callee: Box::new(closure),
-            args: vec![static_shape_seed.unwrap_or_else(|| Expr::Object(Vec::new()))],
+            args: vec![static_shape_seed
+                .or(spread_seed)
+                .unwrap_or_else(|| Expr::Object(Vec::new()))],
             type_args: vec![],
             byte_offset: 0,
         });

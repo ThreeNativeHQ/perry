@@ -2142,6 +2142,7 @@ js_object_shape_id_for_class_keys	Reenters
 js_object_shape_id_for_class_keys_live	Reenters
 js_object_shape_id_for_class_keys_static	Reenters
 js_object_shape_id_for_keys	Reenters
+js_object_spread_clone	Reenters
 js_object_super_call	Reenters
 js_object_super_get	Reenters
 js_object_super_put_value_set	Reenters

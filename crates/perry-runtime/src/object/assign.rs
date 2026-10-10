@@ -647,6 +647,133 @@ pub unsafe extern "C" fn js_object_literal_spread(target_f64: f64, source_f64: f
     object_assign_one(target_f64, source_f64, true)
 }
 
+/// `{ ...src, ... }` when the spread is the literal's FIRST member: a fresh
+/// object holding CopyDataProperties(src). A plain source whose shape proves
+/// every own key an inline enumerable string-keyed data slot, and which has
+/// no meta record (so no symbol, spill or descriptor side state), is cloned
+/// slot for slot and stamped with the source's own ShapeId. Anything else
+/// takes `{}` plus [`js_object_literal_spread`].
+#[no_mangle]
+pub unsafe extern "C" fn js_object_spread_clone(source_f64: f64) -> f64 {
+    if let Some(clone) = spread_clone_fast(source_f64) {
+        return clone;
+    }
+    let scope = crate::gc::RuntimeHandleScope::new();
+    let src_h = scope.root_nanbox_f64(source_f64);
+    let target = js_object_alloc(0, 0);
+    object_assign_one(
+        crate::value::js_nanbox_pointer(target as i64),
+        src_h.get_nanbox_f64(),
+        true,
+    )
+}
+
+/// Header bits with object semantics that the clone must not copy or drop:
+/// integrity levels, a null prototype, a typed-array prototype, tombstones
+/// and per-object descriptors. Bits 3..5 are the GC survival age.
+const SPREAD_CLONE_REFUSED_FLAGS: u16 = crate::gc::OBJ_FLAG_FROZEN
+    | crate::gc::OBJ_FLAG_SEALED
+    | crate::gc::OBJ_FLAG_NO_EXTEND
+    | crate::gc::OBJ_FLAG_NULL_PROTO
+    | crate::gc::OBJ_FLAG_TYPED_ARRAY_PROTO
+    | crate::gc::OBJ_FLAG_STABLE_TOMBSTONES
+    | crate::gc::OBJ_FLAG_HAS_DESCRIPTORS;
+
+unsafe fn spread_clone_fast(source_f64: f64) -> Option<f64> {
+    let jv = JSValue::from_bits(source_f64.to_bits());
+    if !jv.is_pointer() || crate::proxy::js_proxy_is_proxy(source_f64) != 0 {
+        return None;
+    }
+    let src_raw = jv.as_pointer::<u8>() as usize;
+    if src_raw < 0x10000
+        || !src_raw.is_multiple_of(8)
+        || crate::value::addr_class::is_handle_band(src_raw)
+    {
+        return None;
+    }
+    let header = crate::value::addr_class::try_read_gc_header(src_raw)?;
+    if header.obj_type != crate::gc::GC_TYPE_OBJECT
+        || header.gc_flags & crate::gc::GC_FLAG_FORWARDED != 0
+        || header._reserved & SPREAD_CLONE_REFUSED_FLAGS != 0
+    {
+        return None;
+    }
+    // The plain-ordinary birth mark is carried; the GC age bits are not.
+    let carried_flags = header._reserved & crate::gc::OBJ_FLAG_PLAIN_ORDINARY;
+    let src = src_raw as *const ObjectHeader;
+    // A literal's anonymous shape class is part of its shape: the clone keeps it.
+    let class_id = (*src).class_id;
+    if (class_id != 0 && !super::class_registry::is_anon_shape_class_id(class_id))
+        || !(*src).meta.is_null()
+    {
+        return None;
+    }
+    let PositionalPlan::Keys(keys, n, hide) = positional_source_plan(src) else {
+        return None;
+    };
+    let shape_id = super::shapes::object_shape_stamp(src);
+    let desc = super::shapes::shape_descriptor_by_id(shape_id)?;
+    if n == 0
+        || desc.keys != keys as u64
+        || desc.logical_key_count as usize != n
+        || desc.live_inline_slot_count as usize != n
+        || desc.semantic_generation != 0
+    {
+        return None;
+    }
+    let key_list = crate::object::ObjectKeys::new(keys, n as u32);
+    // A hidden key (a private field or a runtime-internal key) refuses: the
+    // clone would carry it as a visible own key.
+    if (0..n as u32).any(|i| {
+        let key = key_list.get(i);
+        !key.is_any_string()
+            || (hide && crate::object::field_get_set::own_slot_hidden(src, i, key))
+    })
+        || !crate::symbol::object_has_no_own_symbols(src_raw)
+    {
+        return None;
+    }
+
+    // The allocation can collect: the source is re-read from its root after.
+    let scope = crate::gc::RuntimeHandleScope::new();
+    let src_h = scope.root_nanbox_f64(source_f64);
+    let header_size = std::mem::size_of::<ObjectHeader>();
+    let phys = std::cmp::max(n, crate::object::INLINE_SLOT_FLOOR);
+    let obj =
+        arena_alloc_gc(header_size + phys * 8, 8, crate::gc::GC_TYPE_OBJECT) as *mut ObjectHeader;
+    let src = JSValue::from_bits(src_h.get_nanbox_f64().to_bits()).as_pointer::<ObjectHeader>();
+    (*obj).class_id = class_id;
+    (*obj).parent_class_id = 0;
+    // GC_STORE_AUDIT(INIT): fresh object starts with no per-object meta record.
+    (*obj).meta = ptr::null_mut();
+    let src_fields = (src as *const u8).add(header_size) as *const u64;
+    let dst_fields = (obj as *mut u8).add(header_size) as *mut u64;
+    for i in 0..phys {
+        let bits = if i < n { *src_fields.add(i) } else { crate::value::TAG_UNDEFINED };
+        // GC_STORE_AUDIT(INIT): unpublished clone; the layout is rebuilt below.
+        ptr::write(dst_fields.add(i), bits);
+    }
+    rebuild_object_field_layout(obj, n);
+    let obj_header = (obj as *mut u8).sub(crate::gc::GC_HEADER_SIZE) as *mut crate::gc::GcHeader;
+    (*obj_header)._reserved |= carried_flags;
+    // The stamp reads only the descriptor and the newborn's class/meta words,
+    // which equal the source's: the checks above make it succeed. If it does
+    // not, the newborn is cleared and dropped unpublished.
+    let stamped = super::shapes::shape_descriptor_by_id(shape_id).is_some_and(|desc| {
+        let keys_now = crate::object::ObjectKeys::new(desc.keys as *mut _, n as u32);
+        super::shapes::try_birth_stamp_preinstalled_shape(obj, shape_id, keys_now, n as u32)
+    });
+    if !stamped {
+        for i in 0..phys {
+            // GC_STORE_AUDIT(INIT): unpublished, dropped newborn.
+            ptr::write(dst_fields.add(i), crate::value::TAG_UNDEFINED);
+        }
+        crate::gc::layout_init_pointer_free(obj as *mut u8);
+        return None;
+    }
+    Some(crate::value::js_nanbox_pointer(obj as i64))
+}
+
 /// `Object.assign(target, source)` for one source (`define == false`), or the
 /// spread literal's CopyDataProperties (`define == true`).
 unsafe fn object_assign_one(target_f64: f64, source_f64: f64, define: bool) -> f64 {
