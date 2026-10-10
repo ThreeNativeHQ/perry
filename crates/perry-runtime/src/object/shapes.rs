@@ -4155,12 +4155,49 @@ pub(crate) unsafe fn transition_object_shape_accessor_replaced(
     let Some(current) = object_shape_descriptor(obj) else {
         return transition_object_shape_semantics(obj);
     };
-    crate::array::clear_array_subclass_named_prefix_token(obj);
     let key_hash = crate::object::key_bytes_hash(key_bytes.as_ptr(), key_bytes.len());
-    // SplitMix64 over (predecessor, key, a tag no other transition uses).
-    // Bit 63 keeps it disjoint from the counter namespace (which aborts far
-    // below 2^62) and from the dictionary namespace (bit 62 alone).
-    let mut x = key_hash ^ (u64::from(prev) << 32 | u64::from(prev)) ^ 0xACCE_5500_0000_0000;
+    derived_semantic_successor(obj, prev, &current, key_hash ^ 0xACCE_5500_0000_0000)
+}
+
+/// RULE 1 for an integrity-level change (`Object.freeze`/`seal`/
+/// `preventExtensions`): the flags live in the receiver's header, not its
+/// keys, so caches trained on the predecessor must miss. As for a replaced
+/// accessor, the successor is a pure function of (predecessor ShapeId,
+/// flags), so receivers frozen from the same predecessor share one shape
+/// instead of minting one each.
+///
+/// # Safety
+/// `obj` is a live `ObjectHeader`, or null.
+pub(crate) unsafe fn transition_object_shape_integrity(
+    obj: *mut crate::object::ObjectHeader,
+    flags: u16,
+) -> u32 {
+    if obj.is_null() || !shape_word_is_writable(obj) {
+        return 0;
+    }
+    if crate::object::dictionary::is_dictionary(obj) {
+        return transition_object_shape_semantics(obj);
+    }
+    let prev = object_shape_stamp(obj);
+    let Some(current) = object_shape_descriptor(obj) else {
+        return transition_object_shape_semantics(obj);
+    };
+    derived_semantic_successor(obj, prev, &current, u64::from(flags) ^ 0x1E67_0000_0000_0000)
+}
+
+/// The shared tail of the derived (not process-unique) semantic transitions:
+/// `seed` already carries the transition's own tag.
+unsafe fn derived_semantic_successor(
+    obj: *mut crate::object::ObjectHeader,
+    prev: u32,
+    current: &ShapeDescriptor,
+    seed: u64,
+) -> u32 {
+    crate::array::clear_array_subclass_named_prefix_token(obj);
+    // SplitMix64 over (predecessor, seed). Bit 63 keeps it disjoint from the
+    // counter namespace (which aborts far below 2^62) and from the dictionary
+    // namespace (bit 62 alone).
+    let mut x = seed ^ (u64::from(prev) << 32 | u64::from(prev));
     x ^= x >> 30;
     x = x.wrapping_mul(0xbf58_476d_1ce4_e5b9);
     x ^= x >> 27;
@@ -4175,7 +4212,7 @@ pub(crate) unsafe fn transition_object_shape_accessor_replaced(
         store_kind::mint_kind(current.object_kind, obj),
         current.hole_count,
         current.proto_id,
-        receiver_facts_of_current(obj, &current),
+        receiver_facts_of_current(obj, current),
         None,
     ));
     stamp_object_shape_id_with_carrier_note(obj, id);

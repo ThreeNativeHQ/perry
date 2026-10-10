@@ -186,7 +186,7 @@ unsafe fn set_integrity_flags(obj: *mut ObjectHeader, flags: u16) {
     let added = (*gc)._reserved & flags != flags;
     (*gc)._reserved |= flags;
     if added {
-        shapes::transition_object_shape_semantics(obj);
+        shapes::transition_object_shape_integrity(obj, flags);
     }
 }
 

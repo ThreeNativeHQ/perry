@@ -1,0 +1,14 @@
+sum 27 plain 100 sealed 200 nox 300
+sum 27 plain 100 sealed 200 nox 300
+sum 27 plain 100 sealed 200 nox 300
+w throw:0 ok:9 ok:9 ok:9
+w2 throw:1 ok:8
+add throw:undefined ok:1 throw:undefined throw:undefined
+isFrozen true false false false
+isSealed true true false false
+ext false false true
+del throw 4
+desc {"value":5,"writable":false,"enumerable":true,"configurable":false} {"value":8,"writable":true,"enumerable":true,"configurable":true}
+keys a,b {"a":5,"b":2}
+three 4 10 true
+late throw:9 throw:undefined
