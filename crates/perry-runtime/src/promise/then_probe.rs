@@ -180,7 +180,7 @@ crate::perry_thread_local! {
 /// The mutable state of `Object.prototype` that a `then` could hide in,
 /// reduced to a comparable tuple. `None` when the prototype is not in a shape
 /// this module is willing to reason about.
-unsafe fn proto_signature(proto_addr: usize) -> Option<(usize, u32, u16, u32)> {
+pub(crate) unsafe fn proto_signature(proto_addr: usize) -> Option<(usize, u32, u16, u32)> {
     let header = crate::value::addr_class::try_read_gc_header(proto_addr)?;
     if header.obj_type != crate::gc::GC_TYPE_OBJECT
         || header.gc_flags & crate::gc::GC_FLAG_FORWARDED != 0

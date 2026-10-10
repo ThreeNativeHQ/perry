@@ -91,6 +91,7 @@ pub(crate) use global_fetch::scan_pending_fetch_signal_root_mut;
 mod global_this;
 pub mod handle_expando;
 pub(crate) mod prop_plan;
+pub(crate) mod absent_cache;
 pub(crate) use global_this::{
     default_prepare_stack_trace_func_ptr, is_array_prototype_method_value,
     scan_error_constructor_root_mut, ERROR_CONSTRUCTOR_PTR,

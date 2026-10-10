@@ -769,10 +769,12 @@ pub extern "C" fn js_object_get_field_ic_miss(
             let key_count = shape.logical_key_count as usize;
             let keys_data = (keys as *const u8).add(8) as *const f64;
             let alloc_limit = shape.live_inline_slot_count as usize;
+            let mut matched = false;
             for i in 0..key_count {
                 let k_bits = (*keys_data.add(i)).to_bits();
                 let k_ptr = (k_bits & 0x0000_FFFF_FFFF_FFFF) as *const crate::StringHeader;
                 if !k_ptr.is_null() && crate::string::js_string_equals(k_ptr, key) != 0 {
+                    matched = true;
                     if i >= alloc_limit {
                         // #9287: a field past the inline region primes too,
                         // with IC_SLOT_OVERFLOW_BIT — the emitted MRU hit path
@@ -851,6 +853,10 @@ pub extern "C" fn js_object_get_field_ic_miss(
                         as *const f64;
                     return *field_ptr;
                 }
+            }
+            // SPIKE: absent own key on a regular, descriptor-free receiver.
+            if !matched && !has_own_descriptors {
+                return crate::object::absent_cache::absent_read(obj, key);
             }
         }
     }

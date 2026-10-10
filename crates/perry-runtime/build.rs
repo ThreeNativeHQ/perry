@@ -211,7 +211,9 @@ fn emit_runtime_build_id() {
         })
         .map(|commit| format!("git:{}", sanitize_build_id(&commit)));
 
-    let build_id = explicit.or(clean_commit).unwrap_or(source_id);
+    // SPIKE: pair a patched runtime with the prebuilt v0.5.1520 compiler.
+    println!("cargo:rerun-if-env-changed=SPIKE_BUILD_ID");
+    let build_id = std::env::var("SPIKE_BUILD_ID").ok().or(explicit).or(clean_commit).unwrap_or(source_id);
     println!("cargo:rustc-env=PERRY_RUNTIME_BUILD_ID={build_id}");
 }
 
