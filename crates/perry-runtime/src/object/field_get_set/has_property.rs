@@ -3,7 +3,7 @@
 
 use super::*;
 
-mod shape_presence;
+pub(super) mod shape_presence;
 
 /// Presence of a Symbol-keyed STATIC member on a class ref, for `sym in Class`
 /// (#6160). Covers the registration schemes the generic symbol resolver

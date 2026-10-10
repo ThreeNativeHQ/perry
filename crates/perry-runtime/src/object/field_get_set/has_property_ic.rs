@@ -62,6 +62,10 @@ pub struct InPresenceCache {
     /// never arm (an inherited hit, a proxy receiver) or one that thrashes
     /// between shapes pays on every call.
     attempts: u64,
+    /// A primed absent answer, as shape facts from
+    /// [`shape_presence::absent_two_hop_facts`]; all zero until primed. Only
+    /// the runtime reads these words — the emitted guard reads word 0 alone.
+    absent: [u32; 4],
 }
 
 /// Arming attempts a site gets before it stops trying. A monomorphic own-key
@@ -86,10 +90,32 @@ pub unsafe extern "C" fn js_in_operator_presence_ic(
     slot: *mut *mut InPresenceCache,
 ) -> f64 {
     const TAG_TRUE: u64 = 0x7FFC_0000_0000_0004;
+    const TAG_FALSE: u64 = 0x7FFC_0000_0000_0003;
+    use super::has_property::shape_presence::{absent_still_holds, absent_two_hop_facts};
+    // A negative is a claim about the whole chain. It is cached only for the
+    // two-hop chain `receiver -> Object.prototype -> null`, as both hops'
+    // ShapeIds (see the module header on why ShapeIds suffice).
+    let absent_on =
+        crate::object::method_site::WORKER_AGENTS_EXIST.load(std::sync::atomic::Ordering::Relaxed) == 0;
+    if absent_on {
+        let cache = crate::object::pic_slot_peek(slot);
+        if !cache.is_null() && (*cache).absent[0] != 0 && absent_still_holds(obj, (*cache).absent) {
+            return f64::from_bits(TAG_FALSE);
+        }
+    }
     let answer = js_in_operator(obj, key);
     if answer.to_bits() != TAG_TRUE {
-        // Absent, or a `false` from a trap: nothing positive to record, and a
-        // negative is not cacheable (see the module header).
+        if absent_on && answer.to_bits() == TAG_FALSE {
+            if let Some(facts) = absent_two_hop_facts(obj, key) {
+                let cache = crate::object::pic_slot_resolve_init(slot, |c| {
+                    (*c).shape = IN_PRESENCE_UNARMED;
+                });
+                if !cache.is_null() && (*cache).attempts < IN_PRESENCE_ATTEMPT_BUDGET {
+                    (*cache).attempts += 1;
+                    (*cache).absent = facts;
+                }
+            }
+        }
         return answer;
     }
     // Resolved with word 0 already holding [`IN_PRESENCE_UNARMED`]: a `true`
@@ -207,7 +233,7 @@ mod tests {
     /// Word 0 is what the emitted guard loads; word 1 must not move under it.
     #[test]
     fn cache_layout_matches_the_emitted_guard() {
-        assert_eq!(std::mem::size_of::<InPresenceCache>(), 16);
+        assert_eq!(std::mem::size_of::<InPresenceCache>(), 32);
         assert_eq!(std::mem::offset_of!(InPresenceCache, shape), 0);
         assert_eq!(std::mem::offset_of!(InPresenceCache, attempts), 8);
     }

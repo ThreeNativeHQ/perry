@@ -94,6 +94,77 @@ pub(super) unsafe fn try_shape_has_property(receiver: f64, key: f64) -> Option<b
     None
 }
 
+/// The non-shape facts [`try_shape_has_property`] reads at one hop: its GC
+/// header, class id and element/exotic meta. Everything else it reads is a
+/// fact of the hop's ShapeId, so a caller holding a primed ShapeId and class id
+/// re-asks only these.
+#[inline]
+unsafe fn hop_plain(obj: *const ObjectHeader, shape: u32, class_id: u32) -> bool {
+    let Some(header) = crate::value::addr_class::try_read_gc_header(obj as usize) else {
+        return false;
+    };
+    if header.obj_type != crate::gc::GC_TYPE_OBJECT
+        || header.gc_flags & crate::gc::GC_FLAG_FORWARDED != 0
+        // A tombstoning delete keeps the ShapeId; a later re-add could too.
+        || header._reserved
+            & (crate::gc::OBJ_FLAG_TYPED_ARRAY_PROTO | crate::gc::OBJ_FLAG_STABLE_TOMBSTONES)
+            != 0
+        || super::super::super::shapes::object_shape_stamp(obj) != shape
+        || (*obj).class_id != class_id
+    {
+        return false;
+    }
+    let meta = (*obj).meta;
+    meta.is_null()
+        || ((*meta).elements == 0
+            && (*meta).flags & crate::object::OBJECT_META_FLAG_EXOTIC_READ_RECEIVER == 0)
+}
+
+/// A negative `in` answer as shape facts: `(receiver ShapeId, receiver class,
+/// Object.prototype ShapeId, its class)` when [`try_shape_has_property`]
+/// proved `key` absent on exactly `receiver -> Object.prototype -> null`.
+/// Each ShapeId pins its own key list and [[Prototype]] edge, and ShapeIds
+/// are never reused, so [`absent_still_holds`] needs no invalidation state —
+/// the same argument as the read site's ABSENT holder entry.
+pub(in crate::object::field_get_set) unsafe fn absent_two_hop_facts(
+    receiver: f64,
+    key: f64,
+) -> Option<[u32; 4]> {
+    use super::super::super::shapes::{object_shape_descriptor, object_shape_stamp};
+    if try_shape_has_property(receiver, key) != Some(false) {
+        return None;
+    }
+    let obj = JSValue::from_bits(receiver.to_bits()).as_pointer::<ObjectHeader>();
+    if object_shape_descriptor(obj)?.proto_id != super::super::super::shapes::PROTO_ID_DEFAULT {
+        return None;
+    }
+    let proto = crate::array::object_prototype_addr_if_resolved() as *const ObjectHeader;
+    if proto.is_null()
+        || object_shape_descriptor(proto)?.proto_id != super::super::super::shapes::PROTO_ID_NULL
+    {
+        return None;
+    }
+    Some([object_shape_stamp(obj), (*obj).class_id, object_shape_stamp(proto), (*proto).class_id])
+}
+
+/// Whether facts from [`absent_two_hop_facts`] still decide `false` for
+/// `receiver`: both hops carry the primed ShapeIds and pass the non-shape
+/// checks [`try_shape_has_property`] makes.
+#[inline]
+pub(in crate::object::field_get_set) unsafe fn absent_still_holds(
+    receiver: f64,
+    facts: [u32; 4],
+) -> bool {
+    let value = JSValue::from_bits(receiver.to_bits());
+    if !value.is_pointer() {
+        return false;
+    }
+    let proto = crate::array::object_prototype_addr_if_resolved() as *const ObjectHeader;
+    !proto.is_null()
+        && hop_plain(value.as_pointer::<ObjectHeader>(), facts[0], facts[1])
+        && hop_plain(proto, facts[2], facts[3])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

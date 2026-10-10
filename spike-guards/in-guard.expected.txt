@@ -1,0 +1,18 @@
+plain false false
+proto-add true true
+proto-del false
+proto-getter true
+getter-del false
+setproto false true
+own-add true
+own-del false
+own-readd true
+null-proto false
+null-own true
+frozen false false
+array false
+array-own true
+class false
+class-proto true
+many false
+many-own true
