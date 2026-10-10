@@ -762,7 +762,7 @@ pub(crate) fn lower(ctx: &mut FnCtx<'_>, expr: &Expr) -> Result<String> {
                 // namespace dispatcher below; treating it as the equal-named
                 // imported class makes `Sharding.layer` read a static field on
                 // the class and return undefined.
-                if !ctx.namespace_imports.contains(name) {
+                if !ctx.namespace_imports.contains(name) && !ctx.imported_vars.contains(name) {
                     let key = (name.clone(), property.clone());
                     if let Some(global_name) = ctx.static_field_globals.get(&key).cloned() {
                         let g_ref = format!("@{}", global_name);
@@ -784,7 +784,8 @@ pub(crate) fn lower(ctx: &mut FnCtx<'_>, expr: &Expr) -> Result<String> {
             // undefined.
             let is_class_ref_object = matches!(object.as_ref(), Expr::ClassRef(_))
                 || matches!(object.as_ref(), Expr::ExternFuncRef { name, .. }
-                    if !ctx.namespace_imports.contains(name) && ctx.class_ids.contains_key(name));
+                    if !ctx.namespace_imports.contains(name)
+                        && !ctx.imported_vars.contains(name) && ctx.class_ids.contains_key(name));
             if is_class_ref_object {
                 let obj_box = lower_expr(ctx, object)?;
                 let key_idx = ctx.strings.intern(property);
@@ -1240,14 +1241,14 @@ pub(crate) fn lower(ctx: &mut FnCtx<'_>, expr: &Expr) -> Result<String> {
                             format!("@{}", ctx.strings.entry(key_idx).handle_global);
                         let blk = ctx.block();
                         let obj_bits = blk.bitcast_double_to_i64(&obj_val);
-                        let obj_handle = blk.and(I64, &obj_bits, POINTER_MASK_I64);
+                        // Imported values may be class refs; retain their tag for lookup.
                         let key_box = blk.load(DOUBLE, &key_handle_global);
                         let key_bits = blk.bitcast_double_to_i64(&key_box);
                         let key_handle = blk.and(I64, &key_bits, POINTER_MASK_I64);
                         return Ok(blk.call(
                             DOUBLE,
                             "js_object_get_field_by_name_f64",
-                            &[(I64, &obj_handle), (I64, &key_handle)],
+                            &[(I64, &obj_bits), (I64, &key_handle)],
                         ));
                     }
                 }

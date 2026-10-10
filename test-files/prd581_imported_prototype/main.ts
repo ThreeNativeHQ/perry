@@ -1,0 +1,11 @@
+import { Material, OtherName, plain } from "./three";
+console.log("direct", typeof Material.prototype);
+console.log("cast", typeof (Material as any).prototype);
+console.log("computed", typeof Material["prototype"]);
+const M = Material;
+console.log("alias", typeof M.prototype);
+console.log("identity", Material.prototype === M.prototype, Material.prototype === Reflect.get(Material, "prototype"));
+console.log("method", Material.prototype.onBeforeCompile());
+console.log("other-name", typeof OtherName.prototype);
+console.log("static", Material.marker);
+console.log("plain", plain.prototype.marker);

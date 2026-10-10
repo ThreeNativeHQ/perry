@@ -616,8 +616,9 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
             }
         }
 
-        // Skip if already defined locally (local definition takes precedence).
-        if class_table.contains_key(&effective_name) {
+        // Lexical values win over imported class metadata, including facade consts.
+        if class_table.contains_key(&effective_name) || opts.imported_vars.contains(&effective_name)
+        {
             // Issue #26 / #321: a locally-shadowed import is still needed for
             // *parent resolution* of OTHER imported classes. Effect's
             // ParseResult.ts declares its own local `class Type`

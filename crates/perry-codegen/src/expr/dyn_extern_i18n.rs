@@ -783,7 +783,11 @@ pub(crate) fn lower(ctx: &mut FnCtx<'_>, expr: &Expr) -> Result<String> {
             // `Object.prototype.hasOwnProperty.call(ImportedClass, sym)`
             // always returned false because the receiver was a closure-pointer
             // NaN-box (POINTER_TAG) rather than a class-ref (INT32_TAG).
-            if let Some(&cid) = ctx.class_ids.get(name) {
+            if let Some(&cid) = ctx
+                .class_ids
+                .get(name)
+                .filter(|_| !ctx.imported_vars.contains(name))
+            {
                 let bits = crate::nanbox::INT32_TAG | (cid as u64 & 0xFFFF_FFFF);
                 return Ok(double_literal(f64::from_bits(bits)));
             }

@@ -301,7 +301,9 @@ pub(crate) fn try_static_class_name<'a>(callee: &'a Expr, ctx: &FnCtx<'_>) -> Op
         // compile_module entry. Without this, the call falls through to the
         // empty-object placeholder path with class_id=0 and method dispatch
         // breaks on the resulting instance.
-        Expr::ExternFuncRef { name, .. } if ctx.class_ids.contains_key(name) => {
+        Expr::ExternFuncRef { name, .. }
+            if !ctx.imported_vars.contains(name) && ctx.class_ids.contains_key(name) =>
+        {
             Some(Cow::Borrowed(name.as_str()))
         }
         Expr::PropertyGet {
