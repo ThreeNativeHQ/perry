@@ -37,6 +37,15 @@ fn substitute_locals_inner(
             }
             return;
         }
+        Expr::ClassExprFresh {
+            evaluation_owner: Some(owner),
+            ..
+        } => {
+            // The owner is a LocalId outside the expression-child walker.
+            if let Some(Expr::LocalGet(new_id)) = param_map.get(owner) {
+                *owner = *new_id;
+            }
+        }
         Expr::ArrayPop(array_id) | Expr::ArrayShift(array_id) => {
             if let Some(Expr::LocalGet(new_id)) = param_map.get(array_id) {
                 *array_id = *new_id;

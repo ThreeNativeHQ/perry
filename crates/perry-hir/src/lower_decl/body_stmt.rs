@@ -333,7 +333,29 @@ fn lower_body_stmt_impl(ctx: &mut LoweringContext, stmt: &ast::Stmt) -> Result<V
             let already_exists = ctx.pending_classes.iter().any(|c| c.name == class_name)
                 || ctx.classes_index.contains_key(&class_name);
             if !already_exists {
-                let class = lower_class_decl(ctx, class_decl, false)?;
+                // Reuse the per-evaluation inner binding of named class expressions.
+                // Public static state still uses the shared-template path below.
+                let self_binding = if !class_decl.class.body.iter().any(|member| {
+                    matches!(member,
+                        ast::ClassMember::ClassProp(prop) if prop.is_static
+                    ) || matches!(member, ast::ClassMember::StaticBlock(_))
+                }) {
+                    let id =
+                        ctx.define_local(format!("__perry_class_self_{class_name}"), Type::Any);
+                    ctx.class_expr_self_bindings.push((
+                        class_decl.ident.sym.to_string(),
+                        ctx.scope_depth,
+                        id,
+                    ));
+                    Some(id)
+                } else {
+                    None
+                };
+                let class_result = lower_class_decl(ctx, class_decl, false);
+                if self_binding.is_some() {
+                    ctx.class_expr_self_bindings.pop();
+                }
+                let class = class_result?;
                 if let Some(extends_expr) = &class.extends_expr {
                     result.push(Stmt::Expr(Expr::RegisterClassParentDynamic {
                         class_name: class.name.clone(),
@@ -458,6 +480,16 @@ fn lower_body_stmt_impl(ctx: &mut LoweringContext, stmt: &ast::Stmt) -> Result<V
                 // real local (not an inferred static class alias), `new C()`
                 // constructs through the evaluated class VALUE.
                 if fresh_binding {
+                    if let Some(id) = self_binding {
+                        result.push(Stmt::Let {
+                            id,
+                            name: format!("__perry_class_self_{class_name}"),
+                            ty: Type::Any,
+                            init: Some(Expr::Undefined),
+                            // ClassExprFresh initializes this slot before reading captures.
+                            mutable: true,
+                        });
+                    }
                     // `class_name` is the collision-safe template key (`C$0`),
                     // but the lexical binding remains the source identifier
                     // (`C`). Binding the local under the template key makes
@@ -474,7 +506,7 @@ fn lower_body_stmt_impl(ctx: &mut LoweringContext, stmt: &ast::Stmt) -> Result<V
                         ty: Type::Any,
                         init: Some(Expr::ClassExprFresh {
                             template: template_name,
-                            evaluation_owner: None,
+                            evaluation_owner: self_binding,
                             named_statics,
                             computed_keys,
                             computed_statics,

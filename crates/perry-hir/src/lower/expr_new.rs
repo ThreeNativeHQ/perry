@@ -271,6 +271,26 @@ pub(super) fn lower_new(ctx: &mut LoweringContext, new_expr: &ast::NewExpr) -> R
                 == Some(ident.sym.as_str())
                 && ctx.current_class.is_some()
                 && !nearest_local_is_inside_class_binding;
+            if !force_global_intrinsic
+                && ctx
+                    .class_expr_self_bindings
+                    .iter()
+                    .rev()
+                    .any(|(name, depth, _)| {
+                        name == source_class_name
+                            && !ctx
+                                .local_decl_scope_depth(name)
+                                .is_some_and(|local| local > *depth)
+                    })
+            {
+                let callee = lower_expr(ctx, callee_expr)?;
+                let args = lower_optional_args(ctx, new_expr.args.as_deref())?;
+                return Ok(Expr::NewDynamic {
+                    callee: Box::new(callee),
+                    args,
+                    byte_offset: new_byte_offset,
+                });
+            }
             let mut class_name = if is_current_class_self {
                 ctx.current_class.clone().unwrap()
             } else {

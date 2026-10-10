@@ -151,6 +151,7 @@ pub(crate) fn lower_bin_expr(ctx: &mut LoweringContext, bin: &ast::BinExpr) -> R
                 if ctx.lookup_local(name).is_some()
                     || ctx.lookup_func(name).is_some()
                     || ctx.lookup_native_module(name).is_some()
+                    || ctx.lookup_imported_func(name).is_some()
                 {
                     match lower_expr(ctx, &bin.right) {
                         Ok(e) => Some(Box::new(e)),

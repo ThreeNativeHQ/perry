@@ -334,13 +334,19 @@ pub(crate) fn lower(ctx: &mut FnCtx<'_>, expr: &Expr) -> Result<String> {
             // is rooted as a group. The static-RHS path below lowers nothing
             // after `v` and keeps its plain `lower_expr`.
             if let Some(ty_e) = ty_expr {
-                return rooting::with_operands_rooted(ctx, &[e, ty_e], |ctx, vals| {
-                    Ok(ctx.block().call(
-                        DOUBLE,
-                        "js_instanceof_dynamic",
-                        &[(DOUBLE, &vals[0]), (DOUBLE, &vals[1])],
-                    ))
-                });
+                // HIR cannot distinguish imported classes from exported values.
+                // Preserve static dispatch only for a resolved imported class.
+                let imported_class = matches!(ty_e.as_ref(), Expr::ExternFuncRef { name, .. }
+                    if name == ty && ctx.class_ids.contains_key(name));
+                if !imported_class {
+                    return rooting::with_operands_rooted(ctx, &[e, ty_e], |ctx, vals| {
+                        Ok(ctx.block().call(
+                            DOUBLE,
+                            "js_instanceof_dynamic",
+                            &[(DOUBLE, &vals[0]), (DOUBLE, &vals[1])],
+                        ))
+                    });
+                }
             }
             let v = lower_expr(ctx, e)?;
             if let Some((submod_key, exported_name)) = ctx.import_function_node_submodule.get(ty) {

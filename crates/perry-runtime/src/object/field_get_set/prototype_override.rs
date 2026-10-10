@@ -37,7 +37,17 @@ pub(super) fn inherited_field_if_overridden(
         return None;
     }
     if !crate::object::prototype_chain::object_has_user_prototype_override(obj as usize) {
-        return None;
+        // Fresh class instances have an internal evaluation-specific prototype;
+        // its constructor must win over the shared template's back-pointer.
+        let bytes = unsafe {
+            std::slice::from_raw_parts(
+                (key as *const u8).add(std::mem::size_of::<crate::StringHeader>()),
+                (*key).byte_len as usize,
+            )
+        };
+        if bytes != b"constructor" {
+            return None;
+        }
     }
     crate::object::prototype_chain::resolve_inherited_field(obj as usize, key)
 }
