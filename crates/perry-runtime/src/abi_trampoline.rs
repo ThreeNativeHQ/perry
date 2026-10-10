@@ -37,10 +37,8 @@ pub(crate) unsafe fn call_all_f64(func_ptr: usize, args: &[f64]) -> f64 {
     // in xmm0..xmm7, no shadow space). The Windows x64 ABI passes FP args in
     // xmm0..xmm3 and requires a 32-byte shadow space, so the SysV asm would
     // mis-pass 5+ args. Win64 falls through to the portable fallback instead.
-    // Up to 16 args go through the compiled fixed-arity dispatch: the asm moves
-    // rsp with no CFI, so an unwinder walking through it (the moving GC's
-    // `_Unwind_Backtrace` stack scan) reads a wrong CFA and faults.
-    // ponytail: arities > 16 still take the asm and stay unwalkable.
+    // Small arities retain the faster compiled fixed-arity dispatch; wider
+    // calls use the frame-pointer asm trampoline with full unwind information.
     #[cfg(all(target_arch = "x86_64", not(target_os = "windows")))]
     {
         if args.len() <= 16 {
@@ -144,8 +142,6 @@ unsafe fn call_all_f64_aarch64(func_ptr: usize, args: &[f64]) -> f64 {
 #[cfg(all(target_arch = "x86_64", not(target_os = "windows")))]
 #[inline(never)]
 unsafe fn call_all_f64_x86_64(func_ptr: usize, args: &[f64]) -> f64 {
-    use core::arch::asm;
-
     let n = args.len();
     let mut reg = [0.0f64; 8];
     for (i, slot) in reg.iter_mut().enumerate() {
@@ -155,67 +151,59 @@ unsafe fn call_all_f64_x86_64(func_ptr: usize, args: &[f64]) -> f64 {
     }
 
     let stacked = if n > 8 { &args[8..] } else { &[][..] };
-    let stacked_count = stacked.len();
-    // Stack must be 16-aligned at the call instruction. The `call` pushes an
-    // 8-byte return address, so before the `call` we need `sp % 16 == 0`. We
-    // reserve a 16-byte multiple for the spilled args; if `stacked_count` is
-    // odd, the natural 8-byte total would misalign, so round up.
-    let raw_bytes = stacked_count * 8;
-    let stack_bytes = (raw_bytes + 15) & !15;
+    call_all_f64_x86_64_asm(func_ptr, reg.as_ptr(), stacked.as_ptr(), stacked.len())
+}
 
-    let ret: f64;
-    asm!(
-        // Stash the pre-adjust rsp in r12 (CALLEE-SAVED, declared as a clobber
-        // below so the compiler saves/restores it). The callee preserves r12, so
-        // the sp restore survives the callee clobbering every caller-saved
-        // register (including any holding `stack_bytes`). We use r12 rather than
-        // rbx because LLVM reserves rbx internally and rejects it as an explicit
-        // inline-asm operand; r12 is an equivalent callee-saved scratch.
-        "mov r12, rsp",
-        // Reserve space for spilled args, then force rsp 16-aligned so that the
-        // `call` (which pushes the 8-byte return address) leaves the callee
-        // entry with rsp ≡ 8 (mod 16), per SysV. `stack_bytes` is a 16-multiple,
-        // so aligning rsp down by clearing the low 4 bits keeps room for all
-        // spilled slots (they are written relative to the post-align rsp).
-        "sub rsp, {stack_bytes}",
-        "and rsp, -16",
-        "xor {i:e}, {i:e}",
-        "test {cnt}, {cnt}",
+// Own the entire frame so CFI never depends on a compiler-generated prologue.
+#[cfg(all(target_arch = "x86_64", not(target_os = "windows")))]
+#[unsafe(naked)]
+unsafe extern "C-unwind" fn call_all_f64_x86_64_asm(
+    func_ptr: usize,
+    reg: *const f64,
+    stacked: *const f64,
+    stacked_count: usize,
+) -> f64 {
+    core::arch::naked_asm!(
+        ".cfi_startproc",
+        "push rbp",
+        ".cfi_def_cfa_offset 16",
+        ".cfi_offset rbp, -16",
+        "mov rbp, rsp",
+        ".cfi_def_cfa_register rbp",
+        // CFA = rbp + 16 throughout the dynamic allocation and callee call.
+        // SysV inputs: rdi = callee, rsi = reg, rdx = stacked, rcx = count.
+        "lea rax, [rcx*8 + 15]",
+        "and rax, -16",
+        "sub rsp, rax",
+        "xor r8d, r8d",
+        "test rcx, rcx",
         "jz 3f",
         "2:",
-        "mov {tmp}, qword ptr [{src} + {i}*8]",
-        "mov qword ptr [rsp + {i}*8], {tmp}",
-        "inc {i}",
-        "cmp {i}, {cnt}",
+        "mov r9, qword ptr [rdx + r8*8]",
+        "mov qword ptr [rsp + r8*8], r9",
+        "inc r8",
+        "cmp r8, rcx",
         "jb 2b",
         "3:",
-        "call {func}",
-        "mov rsp, r12",
-        func = in(reg) func_ptr,
-        src = in(reg) stacked.as_ptr(),
-        cnt = in(reg) stacked_count,
-        stack_bytes = in(reg) stack_bytes,
-        i = out(reg) _,
-        tmp = out(reg) _,
-        out("r12") _,
-        inout("xmm0") reg[0] => ret,
-        inout("xmm1") reg[1] => _,
-        inout("xmm2") reg[2] => _,
-        inout("xmm3") reg[3] => _,
-        inout("xmm4") reg[4] => _,
-        inout("xmm5") reg[5] => _,
-        inout("xmm6") reg[6] => _,
-        inout("xmm7") reg[7] => _,
-        // Caller-saved GPRs the callee may clobber (SysV). `al` (in rax) is set
-        // to the FP-register count for variadic safety. xmm8–xmm15 are
-        // caller-saved on SysV too.
-        inout("rax") 8u64 => _, lateout("rcx") _, lateout("rdx") _, lateout("rsi") _,
-        lateout("rdi") _, lateout("r8") _, lateout("r9") _, lateout("r10") _,
-        lateout("r11") _,
-        lateout("xmm8") _, lateout("xmm9") _, lateout("xmm10") _, lateout("xmm11") _,
-        lateout("xmm12") _, lateout("xmm13") _, lateout("xmm14") _, lateout("xmm15") _,
+        "movsd xmm0, qword ptr [rsi]",
+        "movsd xmm1, qword ptr [rsi + 8]",
+        "movsd xmm2, qword ptr [rsi + 16]",
+        "movsd xmm3, qword ptr [rsi + 24]",
+        "movsd xmm4, qword ptr [rsi + 32]",
+        "movsd xmm5, qword ptr [rsi + 40]",
+        "movsd xmm6, qword ptr [rsi + 48]",
+        "movsd xmm7, qword ptr [rsi + 56]",
+        // al carries the vector-register count for variadic callees.
+        "mov eax, 8",
+        "call rdi",
+        "mov rsp, rbp",
+        ".cfi_def_cfa_register rsp",
+        "pop rbp",
+        ".cfi_def_cfa_offset 8",
+        ".cfi_restore rbp",
+        "ret",
+        ".cfi_endproc",
     );
-    ret
 }
 
 /// Portable fallback for non-asm targets (incl. Windows x64, whose ABI differs
@@ -420,6 +408,11 @@ mod tests {
         let args = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 42.0, 7.0];
         let got = unsafe { call_all_f64(pick as *const () as usize, &args) };
         assert_eq!(got, 42.0 * 1000.0 + 7.0);
+        #[cfg(all(target_arch = "x86_64", not(target_os = "windows")))]
+        {
+            let got = unsafe { call_all_f64_x86_64(pick as *const () as usize, &args) };
+            assert_eq!(got, 42.0 * 1000.0 + 7.0);
+        }
     }
 
     #[inline(never)]
@@ -431,6 +424,16 @@ mod tests {
         crate::eh::selfcheck_frame_b() as f64
     }
 
+    #[inline(never)]
+    extern "C" fn walk20(
+        a: f64, b: f64, c: f64, d: f64, e: f64, f: f64, g: f64,
+        h: f64, i: f64, j: f64, k: f64, l: f64, m: f64, n: f64,
+        o: f64, p: f64, q: f64, r: f64, s: f64, t: f64,
+    ) -> f64 {
+        let _ = (a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q, r, s, t);
+        crate::eh::selfcheck_frame_b() as f64
+    }
+
     // The moving GC scans the stack with `_Unwind_Backtrace` from inside
     // dynamically dispatched ctors. A 13-arg ctor (ThreeNative's engine
     // facade) made the walk read a wrong CFA through the rsp-moving asm and
@@ -438,9 +441,22 @@ mod tests {
     #[cfg(all(target_arch = "x86_64", not(target_os = "windows")))]
     #[test]
     fn trampoline_frame_is_walkable_by_the_unwinder() {
-        let args = [1.0; 13];
-        let direct = walk13(1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0);
-        let through = unsafe { call_all_f64(walk13 as *const () as usize, &args) };
-        assert!(through >= direct, "unwinder saw {through} frames through the trampoline, {direct} direct");
+        let args13 = [1.0; 13];
+        let direct13 = walk13(1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0);
+        let through = unsafe { call_all_f64(walk13 as *const () as usize, &args13) };
+        assert!(through >= direct13, "unwinder saw {through} frames through the trampoline, {direct13} direct");
+
+        // Above B7's fixed-arity ceiling, this must exercise the asm frame.
+        let args = [1.0; 20];
+        let direct = walk20(
+            1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+            1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+        );
+        let through = unsafe { call_all_f64(walk20 as *const () as usize, &args) };
+        assert!(through >= direct, "20-arg unwinder saw {through} frames through the trampoline, {direct} direct");
+
+        // Also cover the asm's odd spill count despite the small-arity routing.
+        let through = unsafe { call_all_f64_x86_64(walk13 as *const () as usize, &args13) };
+        assert!(through >= direct13, "13-arg asm unwinder saw {through} frames through the trampoline, {direct13} direct");
     }
 }
