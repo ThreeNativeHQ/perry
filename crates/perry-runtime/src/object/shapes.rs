@@ -53,13 +53,13 @@ pub(crate) use shapes_linked_birth::{
     complete_layout_generation, declaration_parent_identity, mutation_generation,
     pristine_declaration_holder, stamp_linked_final_shape, stamp_linked_final_shape_requested,
 };
+#[cfg(all(test, feature = "regex-engine"))]
+#[path = "regex_direct_admission_tests.rs"]
+mod regex_direct_admission_tests;
 #[path = "shapes_slot_list.rs"]
 mod shapes_slot_list;
 #[path = "shapes_store.rs"]
 mod shapes_store;
-#[cfg(all(test, feature = "regex-engine"))]
-#[path = "regex_direct_admission_tests.rs"]
-mod regex_direct_admission_tests;
 #[path = "shapes_worker_seed.rs"]
 mod shapes_worker_seed;
 #[cfg(test)]
@@ -4159,6 +4159,11 @@ pub(crate) unsafe fn transition_object_shape_accessor_replaced(
     derived_semantic_successor(obj, prev, &current, key_hash ^ 0xACCE_5500_0000_0000)
 }
 
+crate::perry_thread_local! {
+    static INTEGRITY_TRANSITIONS: std::cell::RefCell<crate::fast_hash::PtrHashMap<u64, u32>> =
+        std::cell::RefCell::new(crate::fast_hash::PtrHashMap::default());
+}
+
 /// RULE 1 for an integrity-level change (`Object.freeze`/`seal`/
 /// `preventExtensions`): the flags live in the receiver's header, not its
 /// keys, so caches trained on the predecessor must miss. As for a replaced
@@ -4182,7 +4187,43 @@ pub(crate) unsafe fn transition_object_shape_integrity(
     let Some(current) = object_shape_descriptor(obj) else {
         return transition_object_shape_semantics(obj);
     };
-    derived_semantic_successor(obj, prev, &current, u64::from(flags) ^ 0x1E67_0000_0000_0000)
+    let cache_key = (is_site_matchable_shape_id(prev)
+        && current.object_kind == ShapeObjectKind::Ordinary
+        && store_kind::receiver_ordinary_kind(obj) == ShapeObjectKind::Ordinary
+        && (*crate::object::gc_header_for(obj))._reserved & crate::gc::OBJ_FLAG_STABLE_TOMBSTONES
+            == 0)
+        .then_some((u64::from(prev) << 16) | u64::from(flags));
+    if let Some(key) = cache_key {
+        // Weak IDs retain no heap edges; resolve their live keys inside the no-move window.
+        let _no_move = crate::gc::GcSuppressScope::new();
+        let target = INTEGRITY_TRANSITIONS.with(|cache| cache.borrow().get(&key).copied());
+        if let Some((id, descriptor)) =
+            target.and_then(|id| shape_descriptor_by_id(id).map(|d| (id, d)))
+        {
+            crate::array::clear_array_subclass_named_prefix_token(obj);
+            if install_cached_object_shape_transition(
+                obj,
+                prev,
+                id,
+                crate::object::ObjectKeys::new(
+                    descriptor.keys as usize as *mut ArrayHeader,
+                    descriptor.logical_key_count,
+                ),
+            ) {
+                return id;
+            }
+        }
+    }
+    let id = derived_semantic_successor(
+        obj,
+        prev,
+        &current,
+        u64::from(flags) ^ 0x1E67_0000_0000_0000,
+    );
+    if let Some(key) = cache_key.filter(|_| is_site_matchable_shape_id(id)) {
+        INTEGRITY_TRANSITIONS.with(|cache| cache.borrow_mut().insert(key, id));
+    }
+    id
 }
 
 /// The shared tail of the derived (not process-unique) semantic transitions:

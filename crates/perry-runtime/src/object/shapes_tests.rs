@@ -3,6 +3,72 @@
 
 use super::*;
 
+#[test]
+fn integrity_transition_cache_checks_modes_stale_ids_and_receiver_facts() {
+    let _lock = crate::gc::global_side_table_test_lock();
+    let _no_move = crate::gc::GcSuppressScope::new();
+    unsafe {
+        let name = crate::string::js_string_from_bytes(b"integrity_transition_r3".as_ptr(), 23);
+        for flags in [
+            crate::gc::OBJ_FLAG_NO_EXTEND,
+            crate::gc::OBJ_FLAG_SEALED | crate::gc::OBJ_FLAG_NO_EXTEND,
+            crate::gc::OBJ_FLAG_FROZEN | crate::gc::OBJ_FLAG_SEALED | crate::gc::OBJ_FLAG_NO_EXTEND,
+        ] {
+            let objects: Vec<_> = (0..5)
+                .map(|i| {
+                    let obj = crate::object::js_object_alloc_null_proto(0, 8);
+                    store_kind::mark_plain_ordinary(obj);
+                    crate::object::js_object_set_field_by_name(obj, name, i as f64);
+                    obj
+                })
+                .collect();
+            let predecessor = object_shape_stamp(objects[0]);
+            assert!(objects
+                .iter()
+                .all(|o| object_shape_stamp(*o) == predecessor));
+            assert_eq!(
+                object_shape_descriptor(objects[0]).unwrap().object_kind,
+                ShapeObjectKind::Ordinary
+            );
+            let cache_key = (u64::from(predecessor) << 16) | u64::from(flags);
+            INTEGRITY_TRANSITIONS.with(|cache| cache.borrow_mut().remove(&cache_key));
+            let mut target = 0;
+            for (i, obj) in objects.iter().copied().enumerate() {
+                (*crate::object::gc_header_for(obj))._reserved |= flags;
+                if i == 2 {
+                    INTEGRITY_TRANSITIONS
+                        .with(|cache| cache.borrow_mut().insert(cache_key, u32::MAX));
+                } else if i == 3 {
+                    (*crate::object::gc_header_for(obj))._reserved |=
+                        crate::gc::OBJ_FLAG_STABLE_TOMBSTONES;
+                } else if i == 4 {
+                    (*crate::object::gc_header_for(obj))._reserved &=
+                        !crate::gc::OBJ_FLAG_PLAIN_ORDINARY;
+                }
+                test_reset_cached_transition_stamps();
+                test_watch_cached_transition_stamps(obj as usize);
+                let id = transition_object_shape_integrity(obj, flags);
+                assert_eq!(test_cached_transition_stamps() > 0, i == 1);
+                if i == 0 {
+                    target = id;
+                } else if i < 3 {
+                    assert_eq!(id, target);
+                } else if i == 4 {
+                    assert_eq!(
+                        object_shape_descriptor(obj).unwrap().object_kind,
+                        ShapeObjectKind::OrdinaryUnmarked
+                    );
+                }
+                assert_eq!(
+                    crate::object::js_object_get_field(obj, 0).as_number(),
+                    i as f64
+                );
+            }
+        }
+        test_reset_cached_transition_stamps();
+    }
+}
+
 #[cfg(test)]
 mod c3c_tests {
     use super::*;
