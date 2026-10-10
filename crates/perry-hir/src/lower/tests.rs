@@ -299,6 +299,27 @@ function build(paramBox: unknown) {
 }
 
 #[test]
+fn a_single_plain_spread_calls_the_clone_without_a_builder_closure() {
+    let module = perry_parser::parse_typescript(
+        "const source = { a: 1 }; const clone = { ...source };",
+        "spread.ts",
+    )
+    .unwrap();
+    let hir = super::lower_module(&module, "spread", "spread.ts").unwrap();
+    let init = hir
+        .init
+        .iter()
+        .find_map(|stmt| match stmt {
+            Stmt::Let { name, init, .. } if name == "clone" => init.as_ref(),
+            _ => None,
+        })
+        .unwrap();
+    assert!(matches!(init, Expr::Call { callee, args, .. }
+        if matches!(callee.as_ref(), Expr::ExternFuncRef { name, .. }
+            if name == "js_object_spread_clone") && args.len() == 1));
+}
+
+#[test]
 fn static_method_literals_skip_the_builder_iife_but_home_objects_fail_closed() {
     let source = r#"
 const outer = 4;

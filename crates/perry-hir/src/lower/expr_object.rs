@@ -1368,6 +1368,10 @@ pub(super) fn lower_object(ctx: &mut LoweringContext, obj: &ast::ObjectLit) -> R
             }
             _ => None,
         };
+        if ops.is_empty() && spread_seed.is_some() {
+            ctx.exit_scope(scope_mark);
+            return Ok(spread_seed.unwrap());
+        }
         let mut body: Vec<Stmt> = Vec::with_capacity(ops.len() * 4 + 1);
         let mut inner_local_ids = vec![param_id];
         for op in ops {

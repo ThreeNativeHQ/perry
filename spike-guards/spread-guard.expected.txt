@@ -23,3 +23,7 @@ one-key {"a":1,"b":2,"c":3,"d":4} a,b,c,d true
 empty-src {"x":1} x true
 gc 39999800000 200 39800400
 internal-key-name {"__perry_wk_entries":1,"ok":2} __perry_wk_entries,ok true
+captured {"n":7}
+warm-delete {"a":1} a true
+warm-hide {"b":3} b true
+warm-symbol 4 1

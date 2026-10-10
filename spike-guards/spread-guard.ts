@@ -92,3 +92,19 @@ for (const k of keep) check += k.payload.n + k.id + k.tag.length;
 console.log("gc", total, keep.length, check);
 const internal = { __perry_wk_entries: 1, ok: 2 };
 show("internal-key-name", { ...internal });
+
+function capturedSpread() {
+  const captured = { n: 7 };
+  return () => ({ ...captured });
+}
+console.log("captured", JSON.stringify(capturedSpread()()));
+const warmed: any = { a: 1, b: 2 };
+for (let i = 0; i < 8; i++) ({ ...warmed });
+delete warmed.b;
+show("warm-delete", { ...warmed });
+warmed.b = 3;
+Object.defineProperty(warmed, "a", { enumerable: false });
+show("warm-hide", { ...warmed });
+warmed[s] = 4;
+const warmedClone = { ...warmed };
+console.log("warm-symbol", warmedClone[s], Object.getOwnPropertySymbols(warmedClone).length);

@@ -679,6 +679,12 @@ const SPREAD_CLONE_REFUSED_FLAGS: u16 = crate::gc::OBJ_FLAG_FROZEN
     | crate::gc::OBJ_FLAG_STABLE_TOMBSTONES
     | crate::gc::OBJ_FLAG_HAS_DESCRIPTORS;
 
+thread_local! {
+    // Shape IDs are never reused; cache scalars, not moving keys pointers.
+    static SPREAD_CLONEABLE: std::cell::RefCell<crate::fast_hash::PtrHashMap<u64, bool>> =
+        std::cell::RefCell::new(crate::fast_hash::new_ptr_hash_map());
+}
+
 unsafe fn spread_clone_fast(source_f64: f64) -> Option<f64> {
     let jv = JSValue::from_bits(source_f64.to_bits());
     if !jv.is_pointer() || crate::proxy::js_proxy_is_proxy(source_f64) != 0 {
@@ -724,13 +730,19 @@ unsafe fn spread_clone_fast(source_f64: f64) -> Option<f64> {
     let key_list = crate::object::ObjectKeys::new(keys, n as u32);
     // A hidden key (a private field or a runtime-internal key) refuses: the
     // clone would carry it as a visible own key.
-    if (0..n as u32).any(|i| {
-        let key = key_list.get(i);
-        !key.is_any_string()
-            || (hide && crate::object::field_get_set::own_slot_hidden(src, i, key))
-    })
-        || !crate::symbol::object_has_no_own_symbols(src_raw)
-    {
+    let cache_key = (u64::from(class_id) << 32) | u64::from(shape_id);
+    let cloneable = SPREAD_CLONEABLE.with(|cache| {
+        *cache.borrow_mut().entry(cache_key).or_insert_with(|| {
+            (0..n as u32).all(|i| {
+                let key = key_list.get(i);
+                key.is_any_string()
+                    && !(hide && crate::object::field_get_set::own_slot_hidden(src, i, key))
+            })
+        })
+    });
+    // Ordinary objects store symbols in these same shape keys; a string-only
+    // shape cannot have additional own symbols in the legacy side table.
+    if !cloneable {
         return None;
     }
 
@@ -749,7 +761,11 @@ unsafe fn spread_clone_fast(source_f64: f64) -> Option<f64> {
     let src_fields = (src as *const u8).add(header_size) as *const u64;
     let dst_fields = (obj as *mut u8).add(header_size) as *mut u64;
     for i in 0..phys {
-        let bits = if i < n { *src_fields.add(i) } else { crate::value::TAG_UNDEFINED };
+        let bits = if i < n {
+            *src_fields.add(i)
+        } else {
+            crate::value::TAG_UNDEFINED
+        };
         // GC_STORE_AUDIT(INIT): unpublished clone; the layout is rebuilt below.
         ptr::write(dst_fields.add(i), bits);
     }
