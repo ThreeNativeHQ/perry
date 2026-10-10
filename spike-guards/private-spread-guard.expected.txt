@@ -1,0 +1,5 @@
+{"q":2} {"q":2} {"q":2}
+{"#p":3,"#<perry:private-value:1:#p>":4}
+q q
+assigned-keys q
+mutation {"first":1,"q":4} 0

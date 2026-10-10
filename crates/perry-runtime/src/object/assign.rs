@@ -1191,10 +1191,7 @@ unsafe fn object_assign_one(target_f64: f64, source_f64: f64, define: bool) -> f
             );
             // Use the public [[Get]] path, not raw field slots, so accessors run
             // and abrupt completions propagate the way Object.assign requires.
-            // A class instance's runtime-internal keys are hidden by name. A
-            // private field (#11791) is a non-enumerable entry, so the
-            // enumerability check below drops it with the shape's own
-            // attributes; no other lookup is needed for it.
+            // Private entries are absent from public attribute lookup; test the snapshot itself.
             let hide_internal = (*src).class_id != 0;
             for i in 0..key_count {
                 // Re-derive every raw address from its handle at the top of the
@@ -1204,7 +1201,12 @@ unsafe fn object_assign_one(target_f64: f64, source_f64: f64, define: bool) -> f
                 let src = src_h.get_raw_const_ptr::<ObjectHeader>();
                 let src_raw = src as usize;
                 let key_val = crate::array::js_array_get(src_keys, i as u32);
-                if !key_val.is_any_string() {
+                if !key_val.is_any_string()
+                    || super::key_attrs::entry_is_private(super::key_attrs::keys_entry(
+                        src_keys,
+                        i as u32,
+                    ))
+                {
                     continue;
                 }
                 if hide_internal {
