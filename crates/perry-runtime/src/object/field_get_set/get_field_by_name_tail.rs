@@ -1299,19 +1299,8 @@ pub(crate) fn get_field_by_name_object_tail(
             }
         }
 
-        // Refs #420 / #618 followup: `instance.constructor` returns the
-        // class ref. Pre-fix this fell through to the keys_array lookup
-        // which never finds "constructor" (the class itself isn't stored
-        // as a field on the instance), and the chain returned undefined.
-        // Drizzle's `is(value, type)` walks `value.constructor[entityKind]`
-        // which depends on this. Spec: every instance's `__proto__.constructor`
-        // points back to the class function. We materialize that lookup
-        // by reading the ObjectHeader's class_id and returning the
-        // INT32-tagged class ref if registered. Unregistered class_id
-        // (e.g. `class C {}` with no methods) still returns undefined
-        // here; pure object literals have class_id=0 and also return
-        // undefined (matches Node behavior — bare object literals don't
-        // get a custom constructor; their .constructor would be Object).
+        // Resolve constructor through own properties and the actual prototype
+        // before using class-id synthesis for unmaterialized builtin surfaces.
         if !key.is_null() {
             let key_ptr = (key as *const u8).add(std::mem::size_of::<crate::StringHeader>());
             let key_len = (*key).byte_len as usize;
@@ -1337,9 +1326,7 @@ pub(crate) fn get_field_by_name_object_tail(
                     }
                 }
             }
-            if key_bytes == b"constructor"
-                && super::super::prototype_chain::object_static_prototype(obj as usize).is_none()
-            {
+            if key_bytes == b"constructor" {
                 if let Some(v) = super::class_object_props::instance_constructor_value(obj, key) {
                     return v;
                 }

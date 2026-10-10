@@ -154,7 +154,7 @@ pub(super) unsafe fn class_object_name_value(
 
 /// #6530 (size-gate split from `get_field_by_name_tail.rs` — pure
 /// relocation): resolve the `constructor` special key for an instance
-/// receiver. Own `constructor` data field wins; then WeakMap/WeakSet,
+/// receiver. Own properties and the actual prototype win; then WeakMap/WeakSet,
 /// the per-evaluation class-object registry (capture-carrying classes),
 /// vtable `constructor` methods, boxed primitives, anon shapes, the
 /// function-class table, and the INT32 ClassRef synthesis. `None` means
@@ -163,8 +163,36 @@ pub(super) unsafe fn instance_constructor_value(
     obj: *const ObjectHeader,
     key: *const crate::StringHeader,
 ) -> Option<JSValue> {
+    if object_has_descriptors(obj as usize)
+        && get_accessor_descriptor(obj as usize, "constructor").is_some()
+    {
+        return None;
+    }
     if let Some(v) = own_data_field_by_name(obj, key) {
         return Some(v);
+    }
+    // Object.create uses a synthetic class id; it is not the inherited constructor.
+    let prototype =
+        super::super::prototype_chain::object_static_prototype(obj as usize).or_else(|| {
+            let declared =
+                super::super::class_registry::class_decl_prototype_object((*obj).class_id);
+            let proto = if declared.is_null() {
+                super::super::class_registry::class_prototype_object((*obj).class_id)
+            } else {
+                declared
+            };
+            (!proto.is_null() && !std::ptr::eq(proto, obj))
+                .then(|| crate::value::js_nanbox_pointer(proto as i64).to_bits())
+        });
+    if let Some(prototype) = prototype {
+        return Some(
+            super::super::prototype_chain::resolve_inherited_field_from_prototype(
+                obj as usize,
+                prototype,
+                key,
+            )
+            .unwrap_or_else(JSValue::undefined),
+        );
     }
     // #7757: a monomorphized specialization must present the GENERIC's
     // reflective surface. `new Gen<number>()` is stamped with `Gen$num`'s id
