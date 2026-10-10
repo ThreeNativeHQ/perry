@@ -146,6 +146,19 @@ pub unsafe extern "C" fn js_object_literal_define(
     value_handle.get_nanbox_f64()
 }
 
+/// Return the rooted receiver so static definitions can compose without a builder closure.
+#[no_mangle]
+pub unsafe extern "C" fn js_object_literal_define_object(
+    obj_value: f64,
+    key_value: f64,
+    value: f64,
+) -> f64 {
+    let scope = crate::gc::RuntimeHandleScope::new();
+    let object = scope.root_nanbox_f64(obj_value);
+    js_object_literal_define(obj_value, key_value, value);
+    object.get_nanbox_f64()
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn js_object_literal_set_prototype(obj_value: f64, proto_value: f64) -> f64 {
     const TAG_NULL: u64 = 0x7FFC_0000_0000_0002;

@@ -108,3 +108,15 @@ show("warm-hide", { ...warmed });
 warmed[s] = 4;
 const warmedClone = { ...warmed };
 console.log("warm-symbol", warmedClone[s], Object.getOwnPropertySymbols(warmedClone).length);
+
+const order: string[] = [];
+const ordered = { get a() { order.push("spread"); return 1; } };
+function allocatingOverride() {
+  order.push("value");
+  const pressure: any[] = [];
+  for (let i = 0; i < 100000; i++) pressure.push({ n: i });
+  return pressure[99999].n;
+}
+const orderedClone = { ...ordered, a: allocatingOverride(), b: (order.push("next"), 3) };
+console.log("override-order", order.join(","), JSON.stringify(orderedClone));
+show("wide-overrides", { ...wide, k40: 40, k41: 41, k42: 42, k43: 43 });

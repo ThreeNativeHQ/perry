@@ -320,6 +320,37 @@ fn a_single_plain_spread_calls_the_clone_without_a_builder_closure() {
 }
 
 #[test]
+fn a_spread_with_static_overrides_composes_receiver_definitions() {
+    let module = perry_parser::parse_typescript(
+        "const source = { a: 1 }; const clone = { ...source, a: 2, b: 3 };",
+        "spread.ts",
+    )
+    .unwrap();
+    let hir = super::lower_module(&module, "spread", "spread.ts").unwrap();
+    let mut init = hir
+        .init
+        .iter()
+        .find_map(|stmt| match stmt {
+            Stmt::Let { name, init, .. } if name == "clone" => init.as_ref(),
+            _ => None,
+        })
+        .unwrap();
+    for key in ["b", "a"] {
+        let Expr::Call { callee, args, .. } = init else {
+            panic!("definition call expected")
+        };
+        assert!(
+            matches!(callee.as_ref(), Expr::ExternFuncRef { name, .. } if name == "js_object_literal_define_object")
+        );
+        assert!(matches!(&args[1], Expr::String(name) if name == key));
+        init = &args[0];
+    }
+    assert!(
+        matches!(init, Expr::Call { callee, .. } if matches!(callee.as_ref(), Expr::ExternFuncRef { name, .. } if name == "js_object_spread_clone"))
+    );
+}
+
+#[test]
 fn static_method_literals_skip_the_builder_iife_but_home_objects_fail_closed() {
     let source = r#"
 const outer = 4;

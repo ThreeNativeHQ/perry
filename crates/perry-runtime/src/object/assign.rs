@@ -679,7 +679,7 @@ const SPREAD_CLONE_REFUSED_FLAGS: u16 = crate::gc::OBJ_FLAG_FROZEN
     | crate::gc::OBJ_FLAG_STABLE_TOMBSTONES
     | crate::gc::OBJ_FLAG_HAS_DESCRIPTORS;
 
-thread_local! {
+crate::perry_thread_local! {
     // Shape IDs are never reused; cache scalars, not moving keys pointers.
     static SPREAD_CLONEABLE: std::cell::RefCell<crate::fast_hash::PtrHashMap<u64, bool>> =
         std::cell::RefCell::new(crate::fast_hash::new_ptr_hash_map());
@@ -714,19 +714,27 @@ unsafe fn spread_clone_fast(source_f64: f64) -> Option<f64> {
     {
         return None;
     }
-    let PositionalPlan::Keys(keys, n, hide) = positional_source_plan(src) else {
-        return None;
-    };
     let shape_id = super::shapes::object_shape_stamp(src);
     let desc = super::shapes::shape_descriptor_by_id(shape_id)?;
-    if n == 0
-        || desc.keys != keys as u64
-        || desc.logical_key_count as usize != n
+    let n = desc.logical_key_count as usize;
+    let keys = desc.keys as *mut crate::ArrayHeader;
+    if !desc.object_kind.is_ordinary_layout()
+        || desc.summary
+            & (super::key_attrs::SUMMARY_ACCESSOR
+                | super::key_attrs::SUMMARY_NON_ENUMERABLE
+                | super::key_attrs::SUMMARY_PRIVATE)
+            != 0
+        || n == 0
+        || keys.is_null()
         || desc.live_inline_slot_count as usize != n
         || desc.semantic_generation != 0
+        || crate::array::keys_array_len_capped_to_capacity(keys) < n
+        || super::string_wrapper::length(src_raw).is_some()
+        || (class_id == 0 && crate::url::is_url_object_shape(src as *mut ObjectHeader))
     {
         return None;
     }
+    let hide = class_id != 0;
     let key_list = crate::object::ObjectKeys::new(keys, n as u32);
     // A hidden key (a private field or a runtime-internal key) refuses: the
     // clone would carry it as a visible own key.

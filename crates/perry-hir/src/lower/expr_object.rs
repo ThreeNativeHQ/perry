@@ -1372,6 +1372,22 @@ pub(super) fn lower_object(ctx: &mut LoweringContext, obj: &ast::ObjectLit) -> R
             ctx.exit_scope(scope_mark);
             return Ok(spread_seed.unwrap());
         }
+        if spread_seed.is_some()
+            && ops.iter().all(|op| {
+                matches!(op,
+            SpreadOp::Set { key: Expr::String(_), value, infer_name: false }
+                if value_is_home_independent(value))
+            })
+        {
+            let result = ops.into_iter().fold(spread_seed.unwrap(), |object, op| {
+                let SpreadOp::Set { key, value, .. } = op else {
+                    unreachable!()
+                };
+                extern_call("js_object_literal_define_object", vec![object, key, value])
+            });
+            ctx.exit_scope(scope_mark);
+            return Ok(result);
+        }
         let mut body: Vec<Stmt> = Vec::with_capacity(ops.len() * 4 + 1);
         let mut inner_local_ids = vec![param_id];
         for op in ops {
