@@ -1417,6 +1417,7 @@ fn set_integer_indexed_exotic(target: f64, key: f64, value: f64) -> bool {
 enum OwnSetDescriptor {
     Data { writable: bool },
     Accessor { setter_bits: u64 },
+    NativeAccessor { setter_ptr: usize },
 }
 
 fn key_to_rust_string(value: f64) -> Option<String> {
@@ -1463,6 +1464,12 @@ fn own_set_descriptor(target: f64, key: f64) -> Option<OwnSetDescriptor> {
         return Some(OwnSetDescriptor::Data { writable });
     }
 
+    if let Some(class_id) = crate::object::class_prototype_ref_id(target) {
+        let name = key_to_rust_string(key)?;
+        if let Some((_, setter)) = crate::object::class_own_accessor_ptrs(class_id, &name) {
+            return Some(OwnSetDescriptor::NativeAccessor { setter_ptr: setter });
+        }
+    }
     // The null-receiver guard stays BEFORE the coercion: `key_to_rust_string`
     // can run a user `toString`, and moving it earlier would make that side
     // effect observable on a path that previously short-circuited.
@@ -1538,7 +1545,67 @@ fn own_set_descriptor(target: f64, key: f64) -> Option<OwnSetDescriptor> {
     if crate::object::obj_value_has_own_key(target, key) {
         return Some(OwnSetDescriptor::Data { writable: true });
     }
+    if let Some(class_id) = crate::object::class_id_for_decl_prototype_object(obj_ptr) {
+        if let Some((_, setter)) = crate::object::class_own_accessor_ptrs(class_id, &key_name) {
+            return Some(OwnSetDescriptor::NativeAccessor { setter_ptr: setter });
+        }
+    }
     None
+}
+
+fn call_native_setter_with_receiver(setter_ptr: usize, receiver: f64, value: f64) -> bool {
+    if setter_ptr == 0 {
+        return false;
+    }
+    let setter: extern "C" fn(f64, f64) -> f64 = unsafe { std::mem::transmute(setter_ptr) };
+    let previous_this = crate::object::js_implicit_this_set(receiver);
+    setter(receiver, value);
+    crate::object::js_implicit_this_set(previous_this);
+    true
+}
+
+/// Intercept a named store only at the first property in the actual prototype
+/// chain. Writable inherited data lets the caller create its own property.
+pub(crate) fn set_inherited_property(receiver: f64, key: f64, value: f64) -> Option<bool> {
+    let scope = crate::gc::RuntimeHandleScope::new();
+    let receiver = scope.root_nanbox_f64(receiver);
+    let key = scope.root_nanbox_f64(key);
+    let value = scope.root_nanbox_f64(value);
+    let mut current = prototype_of_for_set(receiver.get_nanbox_f64());
+    for _ in 0..64 {
+        let proto = current?;
+        let proto = scope.root_nanbox_f64(proto);
+        if lookup(proto.get_nanbox_f64()).is_some() {
+            return Some(
+                crate::value::js_is_truthy(proxy_set_with_receiver(
+                    proto.get_nanbox_f64(),
+                    key.get_nanbox_f64(),
+                    value.get_nanbox_f64(),
+                    receiver.get_nanbox_f64(),
+                )) != 0,
+            );
+        }
+        if let Some(desc) = own_set_descriptor(proto.get_nanbox_f64(), key.get_nanbox_f64()) {
+            return match desc {
+                OwnSetDescriptor::Data { writable: true } => None,
+                OwnSetDescriptor::Data { writable: false } => Some(false),
+                OwnSetDescriptor::NativeAccessor { setter_ptr } => {
+                    Some(call_native_setter_with_receiver(
+                        setter_ptr,
+                        receiver.get_nanbox_f64(),
+                        value.get_nanbox_f64(),
+                    ))
+                }
+                OwnSetDescriptor::Accessor { setter_bits } => Some(call_setter_with_receiver(
+                    setter_bits,
+                    receiver.get_nanbox_f64(),
+                    value.get_nanbox_f64(),
+                )),
+            };
+        }
+        current = prototype_of_for_set(proto.get_nanbox_f64());
+    }
+    Some(false)
 }
 
 fn prototype_of_for_set(value: f64) -> Option<f64> {
@@ -1585,18 +1652,6 @@ fn prototype_of_for_set(value: f64) -> Option<f64> {
                     return None;
                 }
                 return Some(f64::from_bits(proto_bits));
-            }
-            let obj = raw as *const crate::ObjectHeader;
-            if crate::object::is_valid_obj_ptr(obj as *const u8) {
-                unsafe {
-                    let class_id = (*obj).class_id;
-                    if class_id != 0 {
-                        let proto = crate::object::class_prototype_object(class_id);
-                        if !proto.is_null() && proto as usize != raw {
-                            return Some(crate::value::js_nanbox_pointer(proto as i64));
-                        }
-                    }
-                }
             }
         }
     }
@@ -1673,6 +1728,9 @@ fn set_nonindexed_buffer_named_self(target: f64, key: f64, value: f64) -> Option
             match desc {
                 OwnSetDescriptor::Data { writable: false } => return Some(false),
                 OwnSetDescriptor::Data { writable: true } => break,
+                OwnSetDescriptor::NativeAccessor { setter_ptr } => {
+                    return Some(call_native_setter_with_receiver(setter_ptr, target, value));
+                }
                 OwnSetDescriptor::Accessor { setter_bits } => {
                     return Some(call_setter_with_receiver(setter_bits, target, value));
                 }
@@ -1805,7 +1863,7 @@ fn create_or_update_receiver_property(receiver: f64, key: f64, value: f64) -> bo
                     return false;
                 }
             }
-            OwnSetDescriptor::Accessor { .. } => {
+            OwnSetDescriptor::Accessor { .. } | OwnSetDescriptor::NativeAccessor { .. } => {
                 // OrdinarySetWithOwnDescriptor step 2.d.i: reaching here means
                 // the source (target own) descriptor was a data property (or
                 // absent -> CreateDataProperty). A RECEIVER own accessor makes
@@ -2144,6 +2202,9 @@ fn ordinary_set_with_receiver(target: f64, key: f64, value: f64, receiver: f64) 
                     } else {
                         create_or_update_receiver_property(receiver, key, value)
                     }
+                }
+                OwnSetDescriptor::NativeAccessor { setter_ptr } => {
+                    call_native_setter_with_receiver(setter_ptr, receiver, value)
                 }
                 OwnSetDescriptor::Accessor { setter_bits } => {
                     call_setter_with_receiver(setter_bits, receiver, value)

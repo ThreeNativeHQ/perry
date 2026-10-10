@@ -1283,6 +1283,21 @@ pub extern "C" fn js_private_field_add(
 /// receivers observe `defineProperty`, not `set`.
 #[no_mangle]
 pub extern "C" fn js_class_field_add(receiver: f64, key: f64, value: f64) -> f64 {
+    // Fresh predeclared fields already have the default data attributes.
+    let receiver_bits = receiver.to_bits();
+    let key_bits = key.to_bits();
+    if receiver_bits & !crate::value::POINTER_MASK == crate::value::POINTER_TAG
+        && key_bits & !crate::value::POINTER_MASK == crate::value::STRING_TAG
+        && unsafe {
+            super::super::try_initialize_existing_own_data(
+                (receiver_bits & crate::value::POINTER_MASK) as *mut ObjectHeader,
+                (key_bits & crate::value::POINTER_MASK) as *const crate::StringHeader,
+                value,
+            )
+        }
+    {
+        return value;
+    }
     let scope = crate::gc::RuntimeHandleScope::new();
     let receiver = scope.root_nanbox_f64(receiver);
     let key = scope.root_nanbox_f64(key);

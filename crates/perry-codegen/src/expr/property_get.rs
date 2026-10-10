@@ -1394,9 +1394,9 @@ pub(crate) fn lower(ctx: &mut FnCtx<'_>, expr: &Expr) -> Result<String> {
                     // must perform ordinary own-property lookup instead.
                     && !property.starts_with('#')
                 {
-                    if let Some(fn_name) = ctx.methods.get(&getter_key).cloned() {
-                        let recv_box = lower_expr(ctx, object)?;
-                        return Ok(ctx.block().call(DOUBLE, &fn_name, &[(DOUBLE, &recv_box)]));
+                    if ctx.methods.contains_key(&getter_key) {
+                        // Actual own data and nearer prototype accessors take precedence.
+                        return lower_runtime_property_get_by_name(ctx, object, property);
                     }
                 }
                 // #1642: bound-method reference for Web Streams instance methods

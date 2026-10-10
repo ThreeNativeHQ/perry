@@ -1055,7 +1055,8 @@ pub fn lower_class_prop(ctx: &mut LoweringContext, prop: &ast::ClassProp) -> Res
         .transpose();
     ctx.in_class_field_init = saved_field_init;
     ctx.in_nonarrow_fn = saved_in_nonarrow_fn;
-    let init = init?;
+    // Explicit declarations define an own property; constructor-inferred slots do not.
+    let init = Some(init?.unwrap_or(Expr::Undefined));
 
     Ok(ClassField {
         name,

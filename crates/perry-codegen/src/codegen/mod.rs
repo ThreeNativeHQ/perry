@@ -1180,6 +1180,33 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
         // followed by `\0`. Parent classes contribute their fields
         // first (walking from deepest ancestor down) so the slot
         // order matches `class_field_global_index`'s assumption.
+        let mut accessor_names = std::collections::HashSet::new();
+        let mut accessor_class = Some(c);
+        for _ in 0..64 {
+            let Some(class) = accessor_class else {
+                break;
+            };
+            accessor_names.extend(
+                class
+                    .getters
+                    .iter()
+                    .chain(&class.setters)
+                    .map(|(name, _)| name.clone()),
+            );
+            accessor_class = class
+                .extends_name
+                .as_ref()
+                .and_then(|name| class_table.get(name).copied());
+        }
+        let keep_field = |field: &perry_hir::ClassField| {
+            field.init.is_some() || field.is_private || !accessor_names.contains(&field.name)
+        };
+        let own_fields: Vec<_> = c
+            .fields
+            .iter()
+            .filter(|field| keep_field(field))
+            .cloned()
+            .collect();
         let mut packed_keys = String::new();
         // Skip computed-key fields (`[Symbol.for("k")] = …`) and private
         // fields. Computed keys are evaluated at construction time; private
@@ -1193,7 +1220,7 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
                 .filter(|f| f.key_expr.is_none() && !f.is_private)
                 .count() as u32
         };
-        let mut total_field_count = count_keyable(&c.fields);
+        let mut total_field_count = count_keyable(&own_fields);
         // (parent_name, resolved_fields) captured during the chain walk so we
         // don't re-resolve by name (which could re-pick the wrong same-named
         // stub). Refs #26.
@@ -1257,6 +1284,7 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
             if let Some((parent_fields, parent_extends, resolved_prefix)) =
                 lookup_class_chain_link(&parent_name, child_prefix.as_deref())
             {
+                let parent_fields: Vec<_> = parent_fields.into_iter().filter(keep_field).collect();
                 parent_chain.push((parent_name.clone(), parent_fields.clone()));
                 total_field_count += count_keyable(&parent_fields);
                 p = parent_extends;
@@ -1277,7 +1305,7 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
                 packed_keys.push('\0');
             }
         }
-        for f in &c.fields {
+        for f in &own_fields {
             if f.key_expr.is_some() || f.is_private {
                 continue;
             }
@@ -1291,7 +1319,7 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
         let chain: Vec<(String, Vec<perry_hir::ClassField>)> = {
             let mut chain: Vec<(String, Vec<perry_hir::ClassField>)> =
                 parent_chain.iter().rev().cloned().collect();
-            chain.push((c.name.clone(), c.fields.clone()));
+            chain.push((c.name.clone(), own_fields.clone()));
             class_init_chains_map.insert(c.name.clone(), chain.clone());
             for alias in &c.aliases {
                 class_init_chains_map
@@ -1369,6 +1397,33 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
             "zeroinitializer",
         );
         class_keys_globals_map.insert(c.name.clone(), global_name.clone());
+        let mut accessor_names = std::collections::HashSet::new();
+        let mut accessor_class = Some(c);
+        for _ in 0..64 {
+            let Some(class) = accessor_class else {
+                break;
+            };
+            accessor_names.extend(
+                class
+                    .getters
+                    .iter()
+                    .chain(&class.setters)
+                    .map(|(name, _)| name.clone()),
+            );
+            accessor_class = class
+                .extends_name
+                .as_ref()
+                .and_then(|name| class_table.get(name).copied());
+        }
+        let keep_field = |field: &perry_hir::ClassField| {
+            field.init.is_some() || field.is_private || !accessor_names.contains(&field.name)
+        };
+        let own_fields: Vec<_> = c
+            .fields
+            .iter()
+            .filter(|field| keep_field(field))
+            .cloned()
+            .collect();
         let mut packed_keys = String::new();
         let keyable_count = |fields: &[perry_hir::ClassField]| -> u32 {
             fields
@@ -1376,7 +1431,7 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
                 .filter(|f| f.key_expr.is_none() && !f.is_private)
                 .count() as u32
         };
-        let mut total_field_count = keyable_count(&c.fields);
+        let mut total_field_count = keyable_count(&own_fields);
         // Issue #485: imported subclass stubs also need their parent's
         // fields prepended to the packed-keys, so allocations on this
         // importing side reserve enough inline slots for parent +
@@ -1403,13 +1458,20 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
             if let Some((parent_fields, parent_extends, parent_prefix)) =
                 resolve_parent(&parent_name, child_prefix.as_deref())
             {
+                let parent_fields: Vec<_> = parent_fields.into_iter().filter(keep_field).collect();
                 parent_chain.push((parent_name.clone(), parent_fields.clone()));
                 total_field_count += keyable_count(&parent_fields);
                 p = parent_extends;
                 child_prefix = Some(parent_prefix);
             } else if let Some(parent) = hir.classes.iter().find(|cls| cls.name == parent_name) {
-                parent_chain.push((parent_name.clone(), parent.fields.clone()));
-                total_field_count += keyable_count(&parent.fields);
+                let parent_fields: Vec<_> = parent
+                    .fields
+                    .iter()
+                    .filter(|field| keep_field(field))
+                    .cloned()
+                    .collect();
+                total_field_count += keyable_count(&parent_fields);
+                parent_chain.push((parent_name.clone(), parent_fields));
                 p = parent.extends_name.clone();
                 child_prefix = Some(module_prefix.clone());
             } else {
@@ -1425,7 +1487,7 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
                 packed_keys.push('\0');
             }
         }
-        for f in &c.fields {
+        for f in &own_fields {
             if f.key_expr.is_some() || f.is_private {
                 continue;
             }
@@ -1444,7 +1506,7 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
         let typed_layout = {
             let mut chain: Vec<(String, Vec<perry_hir::ClassField>)> =
                 parent_chain.iter().rev().cloned().collect();
-            chain.push((c.name.clone(), c.fields.clone()));
+            chain.push((c.name.clone(), own_fields.clone()));
             let typed_layout = crate::typed_shape::class_typed_layout_from_chain(&chain);
             class_init_chains_map.entry(c.name.clone()).or_insert(chain);
             typed_layout

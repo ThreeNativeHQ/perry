@@ -308,69 +308,21 @@ pub(crate) fn set_field_by_name_object_tail(
             }
         }
 
-        // Refs #486 (hono): class setter dispatch. JS spec: a `set X(...)`
-        // accessor on the prototype intercepts `obj.X = value` writes
-        // before they hit the instance's data slots. Hono's `set res(_res)
-        // { …; this.#res = _res; this.finalized = true; }` is the canonical
-        // example — without setter dispatch, `c.res = response` from inside
-        // compose stored the response into a regular field slot but never
-        // ran the body, so `this.finalized = true` never executed and
-        // hono-base's `if (!context.finalized) throw` fired on every
-        // request. Walk the class -> parent chain mirroring the getter
-        // dispatch in `js_object_get_field_by_name`.
-        // OrdinarySet step 1 is `O.[[GetOwnProperty]](P)`: an own data property
-        // on the RECEIVER shadows an inherited accessor, so the vtable walk only
-        // applies when the receiver has no own property of this name (Node
-        // 26.5.1: `class A { x = 1; set x(v){} }` + `Object.assign(a, {x: 7})`
-        // stores 7 and never calls the setter). `own_key_present` is a
-        // keys-array scan, so it is evaluated LAST and only on the slow path --
-        // a `plan_fast` hit must not pay for it.
+        // Reserved class slots do not authorize bypassing an earlier prototype
+        // descriptor. An actual own data property still shadows the chain.
         if !plan_fast
             && !key.is_null()
-            && (key as usize) > 0x10000
-            && !super::object_ops::own_key_present(obj as *mut ObjectHeader, key)
+            && (*obj).class_id != 0
+            && super::object_is_regular(obj)
+            && !super::object_ops::own_key_present(obj, key)
         {
-            let class_id = (*obj).class_id;
-            if class_id != 0 {
-                if let Ok(registry) = CLASS_VTABLE_REGISTRY.read() {
-                    if let Some(ref reg) = *registry {
-                        let key_bytes = {
-                            let name_ptr =
-                                (key as *const u8).add(std::mem::size_of::<crate::StringHeader>());
-                            let name_len = (*key).byte_len as usize;
-                            std::slice::from_raw_parts(name_ptr, name_len)
-                        };
-                        let mut cid = class_id;
-                        let mut depth = 0usize;
-                        while depth < 32 {
-                            if let Some(vtable) = reg.get(&cid) {
-                                if let Ok(name) = std::str::from_utf8(key_bytes) {
-                                    if let Some(&setter_ptr) = vtable.setters.get(name) {
-                                        // Setters take `(this_f64, value_f64)`
-                                        // matching the codegen calling
-                                        // convention for class methods (this
-                                        // = NaN-boxed POINTER_TAG of the
-                                        // receiver).
-                                        let this_f64: f64 = f64::from_bits(
-                                            crate::value::js_nanbox_pointer(obj as i64).to_bits(),
-                                        );
-                                        let f: extern "C" fn(f64, f64) -> f64 =
-                                            std::mem::transmute(setter_ptr);
-                                        let _ = f(this_f64, value);
-                                        return;
-                                    }
-                                }
-                            }
-                            match get_parent_class_id(cid) {
-                                Some(p) if p != 0 && p != cid => {
-                                    cid = p;
-                                    depth += 1;
-                                }
-                                _ => break,
-                            }
-                        }
-                    }
+            let receiver = crate::value::js_nanbox_pointer(obj as i64);
+            let key_value = crate::value::js_nanbox_string(key as i64);
+            if let Some(stored) = crate::proxy::set_inherited_property(receiver, key_value, value) {
+                if !stored {
+                    crate::error::throw_immutable_write(0, &key_to_str_for_diag(key));
                 }
+                return;
             }
         }
 

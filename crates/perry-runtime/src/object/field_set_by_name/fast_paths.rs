@@ -36,6 +36,34 @@ pub(crate) unsafe fn try_existing_own_data_overwrite(
     key: *const crate::StringHeader,
     value: f64,
 ) -> bool {
+    overwrite_existing_own_data(obj, key, value, true)
+}
+
+pub(crate) unsafe fn try_initialize_existing_own_data(
+    obj: *mut ObjectHeader,
+    key: *const crate::StringHeader,
+    value: f64,
+) -> bool {
+    let Some(header) = crate::value::addr_class::try_read_gc_header(key as usize) else {
+        return false;
+    };
+    if header.obj_type != crate::gc::GC_TYPE_STRING
+        || header.gc_flags & crate::gc::GC_FLAG_FORWARDED != 0
+    {
+        return false;
+    }
+    // Codegen string handles need interning; this operation does not allocate.
+    let key = crate::string::js_string_intern(key, key_content_hash(key));
+    overwrite_existing_own_data(obj, key, value, false)
+}
+
+#[inline]
+unsafe fn overwrite_existing_own_data(
+    obj: *mut ObjectHeader,
+    key: *const crate::StringHeader,
+    value: f64,
+    mark_dynamic: bool,
+) -> bool {
     let obj_addr = obj as usize;
     let key_addr = key as usize;
     if obj.is_null() || key.is_null() {
@@ -132,7 +160,9 @@ pub(crate) unsafe fn try_existing_own_data_overwrite(
     } else {
         vbits
     };
-    super::mark_object_dynamic_shape_unknown(obj);
+    if mark_dynamic {
+        super::mark_object_dynamic_shape_unknown(obj);
+    }
     let alloc_limit = std::cmp::max(live_slots, crate::object::INLINE_SLOT_FLOOR as u32) as usize;
     if (idx as usize) < alloc_limit {
         if idx >= live_slots {
@@ -674,6 +704,58 @@ fn object_set_field_by_name_transition_fast_impl_value(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn class_field_initializer_preserves_canonical_shape() {
+        let _lock = crate::gc::global_side_table_test_lock();
+        let scope = crate::gc::RuntimeHandleScope::new();
+        const CID: u32 = 0x0C3C_0581;
+        let keys = crate::object::js_build_class_keys_array(CID, 1, b"x".as_ptr(), 1);
+        let raw = [1u64];
+        let pointers = [0u64];
+        let shape = crate::gc::js_gc_typed_shape_id_for_keys(
+            CID,
+            keys as u64,
+            1,
+            raw.as_ptr(),
+            1,
+            pointers.as_ptr(),
+            1,
+        );
+        let obj = crate::object::js_object_alloc_class_inline_keys_stamped(CID, 0, 1, keys, shape);
+        unsafe {
+            crate::object::store_object_field_slot(obj, 0, 0.0f64.to_bits());
+        }
+        crate::gc::js_gc_declare_typed_shape_layout(
+            obj as u64,
+            1,
+            raw.as_ptr(),
+            1,
+            pointers.as_ptr(),
+            1,
+        );
+        let obj = scope.root_raw_mut_ptr(obj);
+        let key = crate::string::js_string_from_bytes(b"x".as_ptr(), 1);
+        let key = scope.root_string_ptr(key);
+        let receiver =
+            crate::value::js_nanbox_pointer(obj.get_raw_mut_ptr::<ObjectHeader>() as i64);
+        let name =
+            crate::value::js_nanbox_string(key.get_raw_const_ptr::<crate::StringHeader>() as i64);
+        assert!(crate::gc::layout_has_typed_descriptor(
+            obj.get_raw_mut_ptr::<ObjectHeader>() as usize
+        ));
+        assert_eq!(crate::object::js_class_field_add(receiver, name, 1.0), 1.0);
+        let obj = obj.get_raw_mut_ptr::<ObjectHeader>();
+        assert_eq!(
+            unsafe { crate::object::shapes::object_shape_stamp(obj) },
+            shape
+        );
+        assert!(crate::gc::layout_has_typed_descriptor(obj as usize));
+        let key = key.get_raw_const_ptr::<crate::StringHeader>();
+        let key = crate::string::js_string_intern(key, key_content_hash(key));
+        assert!(unsafe { try_existing_own_data_overwrite(obj, key, 2.0) });
+        assert!(!crate::gc::layout_has_typed_descriptor(obj as usize));
+    }
 
     #[test]
     fn transition_fast_rejects_object_prototype_even_with_a_cached_edge() {

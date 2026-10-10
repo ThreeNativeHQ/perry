@@ -665,16 +665,28 @@ pub extern "C" fn js_object_alloc_class_dynamic_parent(
             };
             bytes.split(|&b| b == 0).filter(|s| !s.is_empty()).collect()
         };
-        let merged_len = parent_len as usize + own_keys.len();
+        // A dynamic subclass accessor shadows assignment-inferred parent slots.
+        // Real parent field declarations re-create their own property in DefineField.
+        let parent_values: Vec<f64> = (0..parent_len)
+            .filter_map(|i| unsafe {
+                let key = crate::array::js_array_get_f64(parent_arr, i);
+                let name = super::reflect_support::key_to_rust_string(key)?;
+                if class_registry::class_chain_has_instance_accessor(class_id, &name) {
+                    None
+                } else {
+                    Some(key)
+                }
+            })
+            .collect();
+        let parent_len = parent_values.len();
+        let merged_len = parent_len + own_keys.len();
         let arr = crate::array::js_array_alloc_with_length_longlived(merged_len as u32);
         let dst = unsafe { (arr as *mut u8).add(8) as *mut f64 };
-        let src = unsafe { (parent_arr as *mut u8).add(8) as *const f64 };
         unsafe {
-            for i in 0..parent_len as usize {
-                let bits = (*src.add(i)).to_bits();
-                // GC_STORE_AUDIT(INIT): initializing fresh longlived keys-array slot
-                // with a longlived parent key; layout recorded below.
-                *dst.add(i) = f64::from_bits(bits);
+            for (i, key) in parent_values.iter().enumerate() {
+                let bits = key.to_bits();
+                // GC_STORE_AUDIT(INIT): fresh longlived keys-array slot, longlived key.
+                *dst.add(i) = *key;
                 crate::array::note_array_slot_layout_only(arr, i, bits);
             }
             for (j, key_bytes) in own_keys.iter().enumerate() {

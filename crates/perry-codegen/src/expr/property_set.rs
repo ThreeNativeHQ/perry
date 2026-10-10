@@ -916,27 +916,9 @@ pub(crate) fn lower(ctx: &mut FnCtx<'_>, expr: &Expr) -> Result<String> {
                     .get(&class_name)
                     .map(|c| c.static_accessor_names.iter().any(|n| n == property))
                     .unwrap_or(false);
-                if !is_static_accessor {
-                    if let Some(fn_name) = ctx.methods.get(&setter_key).cloned() {
-                        if proven_class_name.is_none() {
-                            return lower_runtime_property_set_by_name(
-                                ctx, object, property, value,
-                            );
-                        }
-                        return with_class_store_operands(
-                            ctx,
-                            object,
-                            value,
-                            |ctx, recv_box, val_double| {
-                                let _ = ctx.block().call(
-                                    DOUBLE,
-                                    &fn_name,
-                                    &[(DOUBLE, &recv_box), (DOUBLE, &val_double)],
-                                );
-                                Ok(val_double)
-                            },
-                        );
-                    }
+                if !is_static_accessor && ctx.methods.contains_key(&setter_key) {
+                    // The receiver can own a data field or have a nearer accessor.
+                    return lower_runtime_property_set_by_name(ctx, object, property, value);
                 }
                 // Fast path: known class instance + plain instance field.
                 // The runtime guard checks the receiver's class/shape and

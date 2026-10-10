@@ -349,6 +349,7 @@ fn class_field_fast_contract(
         let shape_id = crate::object::shapes::object_shape_stamp(obj);
         let shape_ok = (*obj).class_id == expected_class_id
             && shape_id == expected_shape_id
+            && !crate::object::prototype_chain::object_has_prototype_divergence(object_addr)
             && descriptor.is_some_and(|facts| {
                 facts.object_kind == crate::object::shapes::ShapeObjectKind::Ordinary
                     && expected_field_index < facts.live_inline_slot_count
@@ -585,6 +586,7 @@ fn class_field_set_contract(
         let keys = descriptor.keys as usize as *const ArrayHeader;
         let valid = class_id == expected_class_id
             && crate::object::object_is_regular(obj)
+            && !crate::object::prototype_chain::object_has_prototype_divergence(object_addr)
             && shape_id == expected_shape_id
             && expected_field_index < descriptor.live_inline_slot_count
             && plain_array_index_guard(keys, expected_field_index, true)
