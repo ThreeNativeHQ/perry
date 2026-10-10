@@ -98,7 +98,7 @@ pub(super) unsafe fn try_shape_has_property(receiver: f64, key: f64) -> Option<b
 /// header, class id and element/exotic meta. Everything else it reads is a
 /// fact of the hop's ShapeId, so a caller holding a primed ShapeId and class id
 /// re-asks only these.
-#[inline]
+#[inline(always)]
 unsafe fn hop_plain(obj: *const ObjectHeader, shape: u32, class_id: u32) -> bool {
     let Some(header) = crate::value::addr_class::try_read_gc_header(obj as usize) else {
         return false;
@@ -109,7 +109,7 @@ unsafe fn hop_plain(obj: *const ObjectHeader, shape: u32, class_id: u32) -> bool
         || header._reserved
             & (crate::gc::OBJ_FLAG_TYPED_ARRAY_PROTO | crate::gc::OBJ_FLAG_STABLE_TOMBSTONES)
             != 0
-        || super::super::super::shapes::object_shape_stamp(obj) != shape
+        || (*obj).parent_class_id != shape
         || (*obj).class_id != class_id
     {
         return false;
@@ -126,10 +126,7 @@ unsafe fn hop_plain(obj: *const ObjectHeader, shape: u32, class_id: u32) -> bool
 /// Each ShapeId pins its own key list and [[Prototype]] edge, and ShapeIds
 /// are never reused, so [`absent_still_holds`] needs no invalidation state —
 /// the same argument as the read site's ABSENT holder entry.
-pub(in crate::object::field_get_set) unsafe fn absent_two_hop_facts(
-    receiver: f64,
-    key: f64,
-) -> Option<[u32; 4]> {
+pub(in crate::object) unsafe fn absent_two_hop_facts(receiver: f64, key: f64) -> Option<[u32; 4]> {
     use super::super::super::shapes::{object_shape_descriptor, object_shape_stamp};
     if try_shape_has_property(receiver, key) != Some(false) {
         return None;
@@ -144,17 +141,19 @@ pub(in crate::object::field_get_set) unsafe fn absent_two_hop_facts(
     {
         return None;
     }
-    Some([object_shape_stamp(obj), (*obj).class_id, object_shape_stamp(proto), (*proto).class_id])
+    Some([
+        object_shape_stamp(obj),
+        (*obj).class_id,
+        object_shape_stamp(proto),
+        (*proto).class_id,
+    ])
 }
 
 /// Whether facts from [`absent_two_hop_facts`] still decide `false` for
 /// `receiver`: both hops carry the primed ShapeIds and pass the non-shape
 /// checks [`try_shape_has_property`] makes.
-#[inline]
-pub(in crate::object::field_get_set) unsafe fn absent_still_holds(
-    receiver: f64,
-    facts: [u32; 4],
-) -> bool {
+#[inline(always)]
+pub(in crate::object) unsafe fn absent_still_holds(receiver: f64, facts: [u32; 4]) -> bool {
     let value = JSValue::from_bits(receiver.to_bits());
     if !value.is_pointer() {
         return false;
@@ -168,6 +167,35 @@ pub(in crate::object::field_get_set) unsafe fn absent_still_holds(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn absent_facts_reject_own_and_prototype_mutations_and_tombstones() {
+        let _lock = crate::gc::global_side_table_test_lock();
+        let _no_gc = crate::gc::GcSuppressScope::new();
+        unsafe {
+            let proto = crate::object::ensure_object_intrinsics().1;
+            let obj = crate::object::object_alloc_plain(0);
+            let key = crate::string::js_string_from_bytes(b"absent_facts_r3".as_ptr(), 15);
+            let receiver = crate::value::js_nanbox_pointer(obj as i64);
+            let name = crate::value::js_nanbox_string(key as i64);
+            let facts = absent_two_hop_facts(receiver, name).unwrap();
+            assert!(absent_still_holds(receiver, facts));
+            let header =
+                (obj as *mut u8).sub(crate::gc::GC_HEADER_SIZE) as *mut crate::gc::GcHeader;
+            (*header)._reserved |= crate::gc::OBJ_FLAG_STABLE_TOMBSTONES;
+            assert!(!absent_still_holds(receiver, facts));
+            (*header)._reserved &= !crate::gc::OBJ_FLAG_STABLE_TOMBSTONES;
+            crate::object::js_object_set_field_by_name(obj, key, 1.0);
+            assert!(!absent_still_holds(receiver, facts));
+            crate::object::js_object_delete_field(obj, key);
+            let facts = absent_two_hop_facts(receiver, name).unwrap();
+            crate::object::js_object_set_field_by_name(proto, key, 2.0);
+            assert!(!absent_still_holds(receiver, facts));
+            crate::object::js_object_delete_field(proto, key);
+            let facts = absent_two_hop_facts(receiver, name).unwrap();
+            assert!(absent_still_holds(receiver, facts));
+        }
+    }
 
     #[test]
     fn dictionary_presence_falls_back_for_own_and_inherited_keys() {

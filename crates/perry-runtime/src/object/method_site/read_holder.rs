@@ -309,6 +309,11 @@ unsafe fn single_entry_answer(c: &HolderEntry, token: i64) -> Option<u64> {
         return multi_absent_extra_answer(c, token);
     }
     let kind = c[HOLDER_KIND];
+    // Absence is a hot read answer too; avoid the cold depth decoder.
+    if kind == HOLDER_ABSENT_DEPTH1 {
+        return (shape_word(c[HOLDER_OBJ] as usize) == c[HOLDER_SHAPE] as u32)
+            .then_some(crate::value::TAG_UNDEFINED);
+    }
     // A depth-1 data holder is the common inherited-read hit. Its kind is
     // exactly an inline slot number; answer it before the absent, accessor,
     // multi-shape and deeper-hop decoding below.
@@ -1329,6 +1334,39 @@ pub(crate) unsafe fn prime_read_holder(
     materialize_class_prototype(obj);
     let name = crate::string::header_str_checked(key)?.as_bytes();
     let recv = ordinary_receiver(obj as usize)?;
+    // Reuse the negative `in` proof; presence never invokes an accessor.
+    if read_name_admitted(recv, name)
+        && crate::object::native_this_alias::object_alias(recv).is_none()
+    {
+        use crate::object::field_get_set::has_property::shape_presence::{
+            absent_still_holds, absent_two_hop_facts,
+        };
+        let receiver = crate::value::js_nanbox_pointer(recv as i64);
+        let boxed_key = crate::value::js_nanbox_string(key as i64);
+        if let Some(facts) = absent_two_hop_facts(receiver, boxed_key) {
+            if absent_still_holds(receiver, facts) {
+                let cache = crate::object::field_get_set::pic_slot_resolve::<PicCache>(cache_slot);
+                if !cache.is_null() {
+                    publish(
+                        cache,
+                        recv,
+                        &Walk {
+                            holder: crate::array::object_prototype_addr_if_resolved(),
+                            holder_shape: facts[2],
+                            slot: None,
+                            hops: NO_HOPS,
+                            depth: 1,
+                            getter: 0,
+                        },
+                        false,
+                    );
+                }
+                return Some(crate::value::JSValue::from_bits(
+                    crate::value::TAG_UNDEFINED,
+                ));
+            }
+        }
+    }
     // The class lane already proves data or absence through holder shapes.
     // Let it answer before doing a second walk looking for an accessor;
     // its pre-walk declines accessor lanes without running their getters.
