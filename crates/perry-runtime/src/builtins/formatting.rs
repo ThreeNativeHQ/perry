@@ -507,7 +507,7 @@ pub fn function_source_for_ptr(func_ptr: usize) -> Option<String> {
 /// `ClosureHeader.func_ptr` is `func_ptr`. Returns the retained source text
 /// when codegen registered it, otherwise a synthesized native form
 /// (`function <name>() { [native code] }`) matching Node's output for
-/// functions without recoverable source (built-ins / bound natives).
+/// functions without retained source (strict builds, built-ins / bound natives).
 pub fn function_source_for_func_ptr(func_ptr: usize) -> String {
     if let Some(src) = function_source_for_ptr(func_ptr) {
         return src;

@@ -1045,7 +1045,7 @@ pub extern "C" fn js_jsvalue_to_string(value: f64) -> *mut crate::string::String
         // the numeric id. #9413 gave codegen a class-source side table
         // (`js_register_class_source`), so this is the real source when the
         // class came from user code and the NativeFunction placeholder only
-        // for classes perry synthesized.
+        // when strict builds omit source or Perry synthesizes the class.
         let n = jsval.as_int32();
         let cid = (value.to_bits() & 0xFFFF_FFFF) as u32;
         if crate::object::is_class_id_registered(cid) {

@@ -18,6 +18,22 @@ pub(crate) fn track_decl_aliases(
     id: LocalId,
     init: &Option<Expr>,
 ) {
+    if let ast::Pat::Ident(ident) = &decl.name {
+        let dynamic_alias = matches!(init, Some(Expr::LocalGet(source))
+            if ctx.source_reflection_dynamic_locals.contains(source));
+        if (ident.type_ann.is_some() || dynamic_alias)
+            && !matches!(ctx.lookup_local_type(name), Some(Type::Function(_)))
+        {
+            ctx.source_reflection_dynamic_locals.insert(id);
+        }
+    }
+    if init.as_ref().is_some_and(|value| match value {
+        Expr::ClassRef(_) | Expr::ClassExprFresh { .. } => true,
+        Expr::LocalGet(source) => ctx.source_reflection_class_locals.contains(source),
+        _ => false,
+    }) {
+        ctx.source_reflection_class_locals.insert(id);
+    }
     // Issue #886: detect `let/const/var <name> = Object.<staticMethod>`
     // from the raw AST so a subsequent indirect call `<name>(args)`
     // can route to the dedicated HIR variant the literal

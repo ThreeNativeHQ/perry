@@ -219,6 +219,8 @@ impl LoweringContext {
             prototype_aliases: HashMap::new(),
             prototype_function_aliases: HashMap::new(),
             function_valued_locals: HashSet::new(),
+            source_reflection_dynamic_locals: HashSet::new(),
+            source_reflection_class_locals: HashSet::new(),
             prototype_function_locals: HashMap::new(),
             object_static_method_aliases: HashMap::new(),
             array_static_method_aliases: HashMap::new(),

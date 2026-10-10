@@ -466,6 +466,7 @@ fn lower_body_stmt_impl(ctx: &mut LoweringContext, stmt: &ast::Stmt) -> Result<V
                     // fields whenever another nested class already claimed C.
                     let binding_name = class_decl.ident.sym.to_string();
                     let class_local = ctx.define_local(binding_name.clone(), Type::Any);
+                    ctx.source_reflection_class_locals.insert(class_local);
                     ctx.record_local_source_span(class_local, class_decl.ident.span);
                     result.push(Stmt::Let {
                         id: class_local,
@@ -503,6 +504,7 @@ fn lower_body_stmt_impl(ctx: &mut LoweringContext, stmt: &ast::Stmt) -> Result<V
                 // packages (no collision) are byte-for-byte unaffected.
                 if !fresh_binding && ctx.lookup_local(&class_name).is_some() {
                     let class_local = ctx.define_local(class_name.clone(), Type::Any);
+                    ctx.source_reflection_class_locals.insert(class_local);
                     ctx.record_local_source_span(class_local, class_decl.ident.span);
                     result.push(Stmt::Let {
                         id: class_local,

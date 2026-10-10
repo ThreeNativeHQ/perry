@@ -102,7 +102,7 @@ pub unsafe extern "C" fn js_register_class_source(class_id: u32, src_ptr: *const
 }
 
 /// The retained source text of a registered class, or `None` when codegen
-/// registered none (a builtin, or a class synthesized at runtime).
+/// registered none (strict builds, builtins, or runtime-synthesized classes).
 pub fn class_source_for_id(class_id: u32) -> Option<String> {
     let map = class_source_registry().lock().ok()?;
     map.get(&class_id).map(|text| text.to_string())
@@ -110,7 +110,7 @@ pub fn class_source_for_id(class_id: u32) -> Option<String> {
 
 /// `Function.prototype.toString` for a class REF: the retained class source
 /// when codegen registered it, otherwise the NativeFunction placeholder Node
-/// uses for callables with no recoverable source. Mirrors
+/// uses for callables with no retained source, including strict builds. Mirrors
 /// `builtins::function_source_for_func_ptr` for the INT32 class-ref encoding.
 pub fn class_ref_to_string(class_id: u32) -> String {
     if let Some(src) = class_source_for_id(class_id) {

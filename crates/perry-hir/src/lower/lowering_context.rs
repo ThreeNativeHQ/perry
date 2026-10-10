@@ -928,6 +928,10 @@ pub struct LoweringContext {
     /// resolve `M` as a `LocalGet(M_id)` — this set is the test that
     /// gate the function-classic prototype-method route.
     pub(crate) function_valued_locals: HashSet<LocalId>,
+    /// Explicitly annotated dynamic bindings retain runtime string conversion.
+    pub(crate) source_reflection_dynamic_locals: HashSet<LocalId>,
+    /// Class constructor aliases keyed by binding identity, preserving shadowing.
+    pub(crate) source_reflection_class_locals: HashSet<LocalId>,
     /// Issue #838 followup (b): parallel to `prototype_aliases` /
     /// `prototype_function_aliases`, but for the local-scope shape
     /// (`var m = M.prototype` where `M` is a `Let M = Closure{…}`).

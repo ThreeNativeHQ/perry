@@ -1237,13 +1237,11 @@ pub fn lower_class_decl(
     // Feeds off Phase 4's body-based inference — any method without an
     // explicit annotation whose body returned a known type lands here too.
     for m in &methods {
-        if !matches!(m.return_type, Type::Any) {
-            ctx.register_class_method_return_type(
-                name.clone(),
-                m.name.clone(),
-                m.return_type.clone(),
-            );
-        }
+        ctx.register_class_method_return_type(
+            name.clone(),
+            m.name.clone(),
+            m.return_type.clone(),
+        );
     }
     for (prop_name, g) in &getters {
         if !matches!(g.return_type, Type::Any) {
@@ -1852,13 +1850,11 @@ pub fn lower_class_from_ast(
     // Phase 4.1: register method + getter return types — see the parallel
     // site in lower_class_decl.
     for m in &methods {
-        if !matches!(m.return_type, Type::Any) {
-            ctx.register_class_method_return_type(
-                name.to_string(),
-                m.name.clone(),
-                m.return_type.clone(),
-            );
-        }
+        ctx.register_class_method_return_type(
+            name.to_string(),
+            m.name.clone(),
+            m.return_type.clone(),
+        );
     }
     for (prop_name, g) in &getters {
         if !matches!(g.return_type, Type::Any) {

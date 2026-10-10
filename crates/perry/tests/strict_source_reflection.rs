@@ -81,3 +81,21 @@ fn callable_to_string_fails_strict_and_prints_original_source_non_strict() {
         "function f(){return 7}\n"
     );
 }
+
+#[test]
+fn dynamic_receivers_use_native_form_only_without_retained_source() {
+    let dir = tempfile::tempdir().expect("isolated fixture directory");
+    let src = "function f(){return 7} class C {} function reflect(x){console.log(x.toString()); console.log(String(x));} const n: any = 5; console.log(n.toString(36)); reflect(f); reflect(C);";
+    for (strict, expected) in [
+        (true, "5\nfunction f() { [native code] }\nfunction f() { [native code] }\nfunction C() { [native code] }\nfunction C() { [native code] }\n"),
+        (false, "5\nfunction f(){return 7}\nfunction f(){return 7}\nclass C {}\nclass C {}\n"),
+    ] {
+        success(&compile(dir.path(), src, strict, false));
+        let run = Command::new(dir.path().join("x"))
+            .stdin(Stdio::null())
+            .output()
+            .expect("run binary");
+        success(&run);
+        assert_eq!(String::from_utf8_lossy(&run.stdout), expected);
+    }
+}

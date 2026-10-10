@@ -56,6 +56,7 @@ fn emit_class_expression_value_binding(
     bind_name: &str,
     mutable: bool,
     is_var: bool,
+    has_type_annotation: bool,
 ) {
     let ty = Type::Any;
     let id = if ctx.scope_depth == 0
@@ -95,6 +96,10 @@ fn emit_class_expression_value_binding(
     }
     if !mutable {
         ctx.mark_local_immutable(id);
+    }
+    ctx.source_reflection_class_locals.insert(id);
+    if has_type_annotation {
+        ctx.source_reflection_dynamic_locals.insert(id);
     }
     ctx.register_let_class_alias(bind_name.to_string(), bind_name.to_string());
     // The binding's local holds ITS OWN class — `new <bind_name>()` must keep
@@ -850,6 +855,7 @@ pub(crate) fn lower_stmt(
                                         .insert(bind_name.clone(), bind_name.clone());
                                     emit_class_expression_value_binding(
                                         ctx, module, &bind_name, mutable, is_var,
+                                        ident.type_ann.is_some(),
                                     );
                                     continue;
                                 }
@@ -930,7 +936,7 @@ pub(crate) fn lower_stmt(
                                                             // the class NAME, not the binding).
                                                             emit_class_expression_value_binding(
                                                                 ctx, module, &bind_name, mutable,
-                                                                is_var,
+                                                                is_var, ident.type_ann.is_some(),
                                                             );
                                                             continue;
                                                         }
@@ -1225,6 +1231,7 @@ pub(crate) fn lower_stmt(
                             Some(id) => id,
                             None => ctx.define_local(binding_name.clone(), Type::Any),
                         };
+                        ctx.source_reflection_class_locals.insert(class_local_id);
                         ctx.record_local_source_span(class_local_id, class_decl.ident.span);
                         module.init.push(Stmt::Let {
                             id: class_local_id,
