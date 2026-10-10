@@ -1278,11 +1278,15 @@ pub unsafe extern "C-unwind" fn js_native_call_method(
     // property lookup before any class/native dispatch: that lookup preserves
     // own-property precedence and, for a miss, the per-instance chain is
     // authoritative rather than falling back to the original class vtable.
+    // Ordinary receivers also resolve bind/call/apply here before the Function
+    // prototype shortcuts; facade instances can inherit methods of those names.
     if jsval().is_pointer() {
         let candidate = jsval().as_pointer::<ObjectHeader>() as usize;
         if crate::value::addr_class::is_above_handle_band(candidate)
             && crate::object::is_valid_obj_ptr(candidate as *const u8)
-            && super::prototype_chain::object_has_user_prototype_override(candidate)
+            && (super::prototype_chain::object_has_user_prototype_override(candidate)
+                || (matches!(method_name, "bind" | "call" | "apply")
+                    && !crate::object::value_is_callable(object())))
         {
             let method_key =
                 crate::string::js_string_from_bytes(method_name.as_ptr(), method_name.len() as u32);
