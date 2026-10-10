@@ -37,9 +37,17 @@ pub(crate) unsafe fn call_all_f64(func_ptr: usize, args: &[f64]) -> f64 {
     // in xmm0..xmm7, no shadow space). The Windows x64 ABI passes FP args in
     // xmm0..xmm3 and requires a 32-byte shadow space, so the SysV asm would
     // mis-pass 5+ args. Win64 falls through to the portable fallback instead.
+    // Up to 16 args go through the compiled fixed-arity dispatch: the asm moves
+    // rsp with no CFI, so an unwinder walking through it (the moving GC's
+    // `_Unwind_Backtrace` stack scan) reads a wrong CFA and faults.
+    // ponytail: arities > 16 still take the asm and stay unwalkable.
     #[cfg(all(target_arch = "x86_64", not(target_os = "windows")))]
     {
-        call_all_f64_x86_64(func_ptr, args)
+        if args.len() <= 16 {
+            call_all_f64_fallback(func_ptr, args)
+        } else {
+            call_all_f64_x86_64(func_ptr, args)
+        }
     }
     #[cfg(not(any(
         target_arch = "aarch64",
@@ -217,10 +225,7 @@ unsafe fn call_all_f64_x86_64(func_ptr: usize, args: &[f64]) -> f64 {
 /// fixed 16-arg `transmute` would mis-call the fn pointer with the wrong
 /// signature (reading register/stack garbage for the missing params), the exact
 /// silent-miscompile class that motivated #5437 — so we panic instead.
-#[cfg(not(any(
-    target_arch = "aarch64",
-    all(target_arch = "x86_64", not(target_os = "windows"))
-)))]
+#[cfg(not(target_arch = "aarch64"))]
 #[inline(never)]
 unsafe fn call_all_f64_fallback(func_ptr: usize, args: &[f64]) -> f64 {
     #[inline(always)]
@@ -415,5 +420,27 @@ mod tests {
         let args = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 42.0, 7.0];
         let got = unsafe { call_all_f64(pick as *const () as usize, &args) };
         assert_eq!(got, 42.0 * 1000.0 + 7.0);
+    }
+
+    #[inline(never)]
+    extern "C" fn walk13(
+        a: f64, b: f64, c: f64, d: f64, e: f64, f: f64, g: f64,
+        h: f64, i: f64, j: f64, k: f64, l: f64, m: f64,
+    ) -> f64 {
+        let _ = (a, b, c, d, e, f, g, h, i, j, k, l, m);
+        crate::eh::selfcheck_frame_b() as f64
+    }
+
+    // The moving GC scans the stack with `_Unwind_Backtrace` from inside
+    // dynamically dispatched ctors. A 13-arg ctor (ThreeNative's engine
+    // facade) made the walk read a wrong CFA through the rsp-moving asm and
+    // fault; the walk must see at least as many frames as a direct call does.
+    #[cfg(all(target_arch = "x86_64", not(target_os = "windows")))]
+    #[test]
+    fn trampoline_frame_is_walkable_by_the_unwinder() {
+        let args = [1.0; 13];
+        let direct = walk13(1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0);
+        let through = unsafe { call_all_f64(walk13 as *const () as usize, &args) };
+        assert!(through >= direct, "unwinder saw {through} frames through the trampoline, {direct} direct");
     }
 }

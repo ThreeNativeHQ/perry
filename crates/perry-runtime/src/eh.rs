@@ -112,7 +112,7 @@ fn selfcheck_frame_a() -> usize {
 }
 
 #[inline(never)]
-fn selfcheck_frame_b() -> usize {
+pub(crate) fn selfcheck_frame_b() -> usize {
     unsafe extern "C" fn count(
         _ctx: *mut UnwindContext,
         arg: *mut core::ffi::c_void,
