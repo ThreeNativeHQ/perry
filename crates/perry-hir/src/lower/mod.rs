@@ -46,6 +46,7 @@ pub(crate) use expr_member::{
     private_storage_property, wrap_private_guard, PRIV_OP_READ, PRIV_OP_WRITE,
 };
 mod expr_misc;
+mod source_reflection;
 mod expr_new;
 mod expr_new_builtins;
 mod expr_object;

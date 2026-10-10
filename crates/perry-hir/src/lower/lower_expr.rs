@@ -66,6 +66,9 @@ const EXPR_LOWER_STACK_RED_ZONE: usize = 256 * 1024;
 const EXPR_LOWER_STACK_SEGMENT: usize = 2 * 1024 * 1024;
 
 pub(crate) fn lower_expr(ctx: &mut LoweringContext, expr: &ast::Expr) -> Result<Expr> {
+    if crate::eval_classifier::unimplemented_strict_mode() {
+        super::source_reflection::check(ctx, expr)?;
+    }
     if relower_trace::enabled() {
         let sp = expr.span();
         relower_trace::record(sp.lo.0, sp.hi.0);

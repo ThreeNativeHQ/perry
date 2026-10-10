@@ -48,6 +48,9 @@ pub(crate) fn capture_function_source(
     span: &swc_common::Span,
     is_async: bool,
 ) {
+    if crate::eval_classifier::unimplemented_strict_mode() {
+        return;
+    }
     let Some(mut src) = crate::ir::current_module_source_slice(span.lo.0, span.hi.0) else {
         return;
     };

@@ -396,6 +396,11 @@ pub(crate) fn try_const_fold_function_construct_kind(
     let lowered = match lowered_result {
         Ok(l) => l,
         Err(e) => {
+            if crate::eval_classifier::unimplemented_strict_mode()
+                && e.to_string().contains("ERR_STRICT_SOURCE_REFLECTION")
+            {
+                return Err(e);
+            }
             // The synthesized body parsed but couldn't be turned into a
             // callable — either a strict-mode early error SWC accepts but
             // lowering rejects (e.g. `with` under `'use strict'`, a genuine
@@ -420,8 +425,10 @@ pub(crate) fn try_const_fold_function_construct_kind(
 
     // `fn.toString()` must return the spec-assembled source, not a slice of
     // the enclosing module at the synthetic span (which would be garbage).
-    if let Expr::Closure { func_id, .. } = &lowered {
-        ctx.closure_source_text.insert(*func_id, assembled);
+    if !crate::eval_classifier::unimplemented_strict_mode() {
+        if let Expr::Closure { func_id, .. } = &lowered {
+            ctx.closure_source_text.insert(*func_id, assembled);
+        }
     }
 
     if eval_diag_enabled() {

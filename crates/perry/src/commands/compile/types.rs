@@ -377,6 +377,8 @@ pub struct CompileArgs {
     /// (so a `try/catch`-guarded probe — e.g. `safer-buffer`'s
     /// `process.binding('buffer')` — no longer blocks the build), and is listed
     /// in the same end-of-build notice as deferred eval / dynamic-import sites.
+    /// Also omits retained function/class source and rejects source reflection
+    /// (including string coercion of possibly callable values).
     /// Also settable via the broad `"perry": { "strict": true }` in
     /// package.json or perry.toml. `PERRY_ALLOW_UNIMPLEMENTED=1` forces this off.
     #[arg(long)]
