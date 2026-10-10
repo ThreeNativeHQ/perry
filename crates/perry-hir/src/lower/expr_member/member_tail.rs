@@ -248,6 +248,11 @@ pub(crate) fn lower_member_tail(
                     // `globalThis.constructor` loses the receiver and returns
                     // undefined instead of the Function constructor.
                     let outer_is_constructor_property = outer_static_member == Some("constructor");
+                    // TypedArray factories fall through to runtime dispatch when
+                    // mapping; retain the constructor that owns the inherited static.
+                    let outer_is_typed_array_factory =
+                        crate::ir::typed_array_kind_for_name(property).is_some()
+                            && matches!(outer_static_member, Some("from" | "of"));
                     // #4596 follow-up: `Array.isArray` / `Array.from` /
                     // `Array.of` read as VALUES need the reified Array
                     // constructor receiver so they resolve to the real native
@@ -423,6 +428,7 @@ pub(crate) fn lower_member_tail(
                             .unwrap_or(false);
                     if !outer_is_prototype_or_proto
                         && !outer_is_constructor_property
+                        && !outer_is_typed_array_factory
                         && !receiver_is_namespace_value
                         && !receiver_is_regexp_ctor
                         && !receiver_is_function_ctor
