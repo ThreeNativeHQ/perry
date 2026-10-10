@@ -239,3 +239,64 @@ fn attributed_rekey_keeps_reserved_inline_capacity() {
         );
     }
 }
+
+#[test]
+fn integrity_successors_reuse_live_shapes_and_decline_stale_ids_and_tombstones() {
+    let _lock = crate::gc::global_side_table_test_lock();
+    let _no_move = crate::gc::GcSuppressScope::new();
+    unsafe {
+        for freeze in [false, true] {
+            let name = key(if freeze {
+                "freeze_cache_r3"
+            } else {
+                "seal_cache_r3"
+            });
+            let objects: Vec<_> = (0..4)
+                .map(|i| {
+                    let obj = crate::object::js_object_alloc_null_proto(0, 8);
+                    crate::object::js_object_set_field_by_name(obj, name, i as f64);
+                    obj
+                })
+                .collect();
+            let predecessor = crate::object::shapes::object_shape_stamp(objects[0]);
+            assert!(objects
+                .iter()
+                .all(|o| crate::object::shapes::object_shape_stamp(*o) == predecessor));
+            apply_edits(objects[0], &[AttrsEdit::Integrity { freeze }]);
+            let target = crate::object::shapes::object_shape_stamp(objects[0]);
+            crate::object::shapes::test_reset_cached_transition_stamps();
+            crate::object::shapes::test_watch_cached_transition_stamps(objects[1] as usize);
+            apply_edits(objects[1], &[AttrsEdit::Integrity { freeze }]);
+            assert!(crate::object::shapes::test_cached_transition_stamps() > 0);
+            assert_eq!(
+                crate::object::shapes::object_shape_stamp(objects[1]),
+                target
+            );
+            let cache_key = u64::from(predecessor) | (u64::from(freeze) << 32);
+            INTEGRITY_SUCCESSORS.with(|cache| {
+                cache.borrow_mut().insert(cache_key, u32::MAX);
+            });
+            crate::object::shapes::test_reset_cached_transition_stamps();
+            crate::object::shapes::test_watch_cached_transition_stamps(objects[2] as usize);
+            apply_edits(objects[2], &[AttrsEdit::Integrity { freeze }]);
+            assert_eq!(crate::object::shapes::test_cached_transition_stamps(), 0);
+            (*crate::object::gc_header_for(objects[3]))._reserved |=
+                crate::gc::OBJ_FLAG_STABLE_TOMBSTONES;
+            crate::object::shapes::test_watch_cached_transition_stamps(objects[3] as usize);
+            apply_edits(objects[3], &[AttrsEdit::Integrity { freeze }]);
+            assert_eq!(crate::object::shapes::test_cached_transition_stamps(), 0);
+            for (i, obj) in objects.iter().enumerate() {
+                let keys = crate::object::object_keys(*obj);
+                let entry = keys_entry(keys.arr(), 0);
+                assert!(entry & ENTRY_NON_CONFIGURABLE != 0);
+                assert_eq!(entry & ENTRY_NON_WRITABLE != 0, freeze);
+                assert_eq!(entry & ENTRY_NON_ENUMERABLE, 0);
+                assert_eq!(
+                    crate::object::js_object_get_field(*obj, 0).as_number(),
+                    i as f64
+                );
+            }
+        }
+        crate::object::shapes::test_reset_cached_transition_stamps();
+    }
+}

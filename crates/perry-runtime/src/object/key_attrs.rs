@@ -1040,6 +1040,12 @@ unsafe fn fold_edits(edits: &[AttrsEdit<'_>], slot: crate::JSValue, old: u8) -> 
     entry
 }
 
+crate::perry_thread_local! {
+    // Weak scalar IDs: retired successors miss when re-resolved under GC suppression.
+    static INTEGRITY_SUCCESSORS: std::cell::RefCell<crate::fast_hash::PtrHashMap<u64, u32>> =
+        std::cell::RefCell::new(crate::fast_hash::new_ptr_hash_map());
+}
+
 /// Apply `edits` to `obj`'s keys: the one place an attribute change reaches
 /// the layout.
 ///
@@ -1068,6 +1074,31 @@ pub(crate) unsafe fn apply_edits(obj: *mut crate::object::ObjectHeader, edits: &
     #[cfg(feature = "attr-census")]
     crate::object::attr_census::note_kind("edit.apply", obj as usize);
     let _no_move = crate::gc::GcSuppressScope::new();
+    let predecessor = crate::object::shapes::object_shape_stamp(obj);
+    let cache_key = match edits {
+        [AttrsEdit::Integrity { freeze }]
+            if crate::object::shapes::is_site_matchable_shape_id(predecessor)
+                && (*crate::object::gc_header_for(obj))._reserved
+                    & crate::gc::OBJ_FLAG_STABLE_TOMBSTONES
+                    == 0 =>
+        {
+            Some(u64::from(predecessor) | (u64::from(*freeze) << 32))
+        }
+        _ => None,
+    };
+    if let Some(key) = cache_key {
+        let successor = INTEGRITY_SUCCESSORS.with(|cache| cache.borrow().get(&key).copied());
+        if let Some(desc) = successor.and_then(crate::object::shapes::shape_descriptor_by_id) {
+            if crate::object::shapes::install_cached_object_shape_transition(
+                obj,
+                predecessor,
+                successor.unwrap(),
+                crate::object::ObjectKeys::new(desc.keys as *mut _, desc.logical_key_count),
+            ) {
+                return;
+            }
+        }
+    }
     // 1. Claim absent keys, each with its folded entry.
     for (i, edit) in edits.iter().enumerate() {
         let Some(key) = edit.key() else {
@@ -1155,6 +1186,14 @@ pub(crate) unsafe fn apply_edits(obj: *mut crate::object::ObjectHeader, edits: &
             fold_edits(edits, slot, old)
         });
     crate::object::set_object_keys(obj, rebuilt.view());
+    if let Some(key) = cache_key {
+        let successor = crate::object::shapes::object_shape_stamp(obj);
+        if successor != 0 {
+            INTEGRITY_SUCCESSORS.with(|cache| {
+                cache.borrow_mut().insert(key, successor);
+            });
+        }
+    }
 }
 
 /// Edit a dictionary receiver's PRIVATE list in place from position `from`.
