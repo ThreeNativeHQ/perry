@@ -937,10 +937,21 @@ pub unsafe extern "C-unwind" fn js_new_function_construct(
             .as_pointer::<ObjectHeader>();
         let class_cid = js_object_get_class_id(obj);
         if class_cid != 0 {
-            let inst = js_object_alloc(
-                class_cid,
-                crate::object::learned_inline_field_count(class_cid),
-            );
+            // B22: start from the class's canonical keys, as the ClassRef arm
+            // (`construct_registered_class_ref`) does. An empty object grew
+            // its fields by transition, so every instance of a class that
+            // captures its scope (three's `Vector3` inside `defineMath`) had a
+            // shape the compiled class-field guards never match.
+            let inst = if let Some((keys_array, field_count)) =
+                registered_class_keys_array(class_cid)
+            {
+                js_object_alloc_class_inline_keys(class_cid, 0, field_count, keys_array)
+            } else {
+                js_object_alloc(
+                    class_cid,
+                    crate::object::learned_inline_field_count(class_cid),
+                )
+            };
             // #7280: root the instance across the replay — see the long note
             // in `construct_registered_class_ref`. The replay runs a user
             // constructor body, so a bare `*mut ObjectHeader` held across it
