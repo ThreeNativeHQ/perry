@@ -304,7 +304,14 @@ pub(crate) fn pre_scan_weakref_locals(ast_module: &ast::Module, ctx: &mut Loweri
             ast::ModuleItem::ModuleDecl(ast::ModuleDecl::ExportDecl(export_decl)) => {
                 match &export_decl.decl {
                     ast::Decl::Class(cd) => record_shadow(cd.ident.sym.as_ref(), &mut shadowed),
-                    ast::Decl::Fn(fd) => record_shadow(fd.ident.sym.as_ref(), &mut shadowed),
+                    ast::Decl::Fn(fd) => {
+                        record_shadow(fd.ident.sym.as_ref(), &mut shadowed);
+                        if let Some(body) = &fd.function.body {
+                            for s in &body.stmts {
+                                collect_shadowing_decls(s, &mut shadowed);
+                            }
+                        }
+                    }
                     ast::Decl::Var(vd) => {
                         for d in &vd.decls {
                             if let ast::Pat::Ident(ident) = &d.name {
@@ -313,6 +320,15 @@ pub(crate) fn pre_scan_weakref_locals(ast_module: &ast::Module, ctx: &mut Loweri
                         }
                     }
                     _ => {}
+                }
+            }
+            ast::ModuleItem::ModuleDecl(ast::ModuleDecl::ExportDefaultDecl(default_decl)) => {
+                if let ast::DefaultDecl::Fn(fn_expr) = &default_decl.decl {
+                    if let Some(body) = &fn_expr.function.body {
+                        for s in &body.stmts {
+                            collect_shadowing_decls(s, &mut shadowed);
+                        }
+                    }
                 }
             }
             ast::ModuleItem::ModuleDecl(ast::ModuleDecl::Import(import_decl)) => {
@@ -333,9 +349,31 @@ pub(crate) fn pre_scan_weakref_locals(ast_module: &ast::Module, ctx: &mut Loweri
         match item {
             ast::ModuleItem::Stmt(stmt) => walk_stmt(stmt, ctx, &mut poison, &shadowed),
             ast::ModuleItem::ModuleDecl(ast::ModuleDecl::ExportDecl(export_decl)) => {
-                if let ast::Decl::Var(var_decl) = &export_decl.decl {
-                    for decl in &var_decl.decls {
-                        record_var(decl, ctx, &mut poison, &shadowed);
+                match &export_decl.decl {
+                    ast::Decl::Var(var_decl) => {
+                        for decl in &var_decl.decls {
+                            record_var(decl, ctx, &mut poison, &shadowed);
+                        }
+                    }
+                    // B24: an exported function's body is scanned like a plain
+                    // declaration's, so its `const m = new WeakMap()` keeps the
+                    // intrinsic fast path instead of generic method dispatch.
+                    ast::Decl::Fn(fn_decl) => {
+                        if let Some(body) = &fn_decl.function.body {
+                            for s in &body.stmts {
+                                walk_stmt(s, ctx, &mut poison, &shadowed);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            ast::ModuleItem::ModuleDecl(ast::ModuleDecl::ExportDefaultDecl(default_decl)) => {
+                if let ast::DefaultDecl::Fn(fn_expr) = &default_decl.decl {
+                    if let Some(body) = &fn_expr.function.body {
+                        for s in &body.stmts {
+                            walk_stmt(s, ctx, &mut poison, &shadowed);
+                        }
                     }
                 }
             }

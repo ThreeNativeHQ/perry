@@ -142,3 +142,5 @@ mod for_of_counter_tests;
 mod proxy_binding_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod weakmap_export_b24_tests;

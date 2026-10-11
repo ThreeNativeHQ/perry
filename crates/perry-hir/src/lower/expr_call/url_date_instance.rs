@@ -515,7 +515,15 @@ pub(super) fn try_url_date_weakref_instance(
                         byte_offset: 0,
                     }
                 };
-                if ctx.weakmap_locals.contains(&recv_name) {
+                // B24: the weak-locals sets are name-keyed; a same-named binding
+                // whose declared type names another collection keeps generic dispatch.
+                let weak_typed = |base_name: &str| match ctx.lookup_local_type(&recv_name) {
+                    None | Some(Type::Any | Type::Unknown) => true,
+                    Some(Type::Named(name)) => name == base_name,
+                    Some(Type::Generic { base, .. }) => base == base_name,
+                    Some(_) => false,
+                };
+                if ctx.weakmap_locals.contains(&recv_name) && weak_typed("WeakMap") {
                     let map_id = ctx.lookup_local(&recv_name).unwrap_or(0);
                     let recv = Expr::LocalGet(map_id);
                     match method_name {
@@ -549,7 +557,7 @@ pub(super) fn try_url_date_weakref_instance(
                         _ => {}
                     }
                 }
-                if ctx.weakset_locals.contains(&recv_name) {
+                if ctx.weakset_locals.contains(&recv_name) && weak_typed("WeakSet") {
                     let set_id = ctx.lookup_local(&recv_name).unwrap_or(0);
                     let recv = Expr::LocalGet(set_id);
                     match method_name {
