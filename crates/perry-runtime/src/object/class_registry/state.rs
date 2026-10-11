@@ -753,6 +753,19 @@ pub(crate) fn class_id_for_decl_prototype_object(ptr: usize) -> Option<u32> {
     CLASS_DECL_PROTOTYPE_OBJECTS.with(|table| table.read().ok()?.as_ref()?.class_id_for(ptr))
 }
 
+/// Like [`class_id_for_decl_prototype_object`], but also answers for the
+/// per-evaluation prototype of a capture-carrying class. Read-only reflection
+/// (descriptors, own keys, `[[Set]]` accessor lookup) uses this; the write
+/// paths that retarget the declared prototype keep the strict lookup.
+pub(crate) fn class_id_for_prototype_object(ptr: usize) -> Option<u32> {
+    class_id_for_decl_prototype_object(ptr).or_else(|| {
+        if !crate::value::addr_class::is_plausible_heap_addr(ptr) {
+            return None;
+        }
+        unsafe { super::super::field_get_set::class_evaluation_prototype_class_id(ptr) }
+    })
+}
+
 /// #7757: a monomorphized specialization (`Gen$num`) must present the GENERIC's
 /// reflective surface. TypeScript erases type arguments, so at runtime there is
 /// exactly one `Gen`, one `Gen.prototype` and one `Gen.prototype.constructor` —

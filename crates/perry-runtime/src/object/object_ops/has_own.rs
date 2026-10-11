@@ -165,7 +165,7 @@ pub extern "C" fn js_object_has_own(obj_value: f64, key_value: f64) -> f64 {
             }
             let obj_key = crate::symbol::obj_key_from_f64(obj_value);
             if let Some(class_id) =
-                super::super::class_registry::class_id_for_decl_prototype_object(obj_key)
+                super::super::class_registry::class_id_for_prototype_object(obj_key)
             {
                 if super::super::class_registry::class_has_own_symbol_member(
                     class_id, sym_key, false,
@@ -467,7 +467,7 @@ pub extern "C" fn js_object_has_own(obj_value: f64, key_value: f64) -> f64 {
         // class/definition/{getters,setters}-prop-desc, which assert via
         // `verifyProperty` → `hasOwnProperty`).
         if let Some(cid) =
-            super::super::class_registry::class_id_for_decl_prototype_object(obj as usize)
+            super::super::class_registry::class_id_for_prototype_object(obj as usize)
         {
             if let Some(key) = super::super::has_own_helpers::str_from_string_header(key_str) {
                 if !super::super::class_registry::class_is_key_deleted(cid, key)

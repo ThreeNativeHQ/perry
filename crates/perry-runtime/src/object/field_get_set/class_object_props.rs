@@ -123,6 +123,30 @@ unsafe fn class_evaluation_prototype_value(obj: *const ObjectHeader) -> f64 {
     proto.with_mut_ptr::<ObjectHeader, _>(|proto| crate::value::js_nanbox_pointer(proto as i64))
 }
 
+/// The template class id behind a per-evaluation class prototype object
+/// (what `class_evaluation_prototype_value` mints for a capture-carrying
+/// class), or `None` for any other address. Accessors and Symbol members of
+/// such a class live in the template's registries exactly as they do for a
+/// declared class prototype, but the declared-prototype table only holds one
+/// object per class id. Recognised by the pair of links the evaluation
+/// writes: `proto.constructor` is a class object whose hidden prototype slot
+/// points back at `proto`.
+pub(crate) unsafe fn class_evaluation_prototype_class_id(ptr: usize) -> Option<u32> {
+    let proto = crate::value::js_nanbox_pointer(ptr as i64);
+    let constructor =
+        crate::object::js_object_get_own_field_or_undef(proto, b"constructor".as_ptr(), 11);
+    if !super::super::class_registry::is_class_object_value(constructor) {
+        return None;
+    }
+    let back_link = crate::object::js_object_get_own_field_or_undef(
+        constructor,
+        CLASS_EVALUATION_PROTOTYPE_KEY.as_ptr(),
+        CLASS_EVALUATION_PROTOTYPE_KEY.len(),
+    );
+    ((back_link.to_bits() & crate::value::POINTER_MASK) as usize == ptr)
+        .then(|| (*(ptr as *const ObjectHeader)).class_id)
+}
+
 /// #4949: heap class-expression values (`ClassExprFresh`) are real
 /// OBJECT_TYPE_CLASS objects, not INT32 class refs. Their `.prototype`
 /// read must still expose the live declared-class prototype object so

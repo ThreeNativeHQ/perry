@@ -933,7 +933,7 @@ pub extern "C" fn js_object_get_own_property_descriptor(obj_value: f64, key_valu
         // A declared class's materialized `.prototype` object: instance
         // accessors (`get x(){}`) live in the class vtable, not the object's
         // fields, but they ARE own properties of the prototype.
-        if let Some(cid) = super::class_registry::class_id_for_decl_prototype_object(obj as usize) {
+        if let Some(cid) = super::class_registry::class_id_for_prototype_object(obj as usize) {
             if let Some(ref name) = key_rust {
                 if super::class_registry::class_is_key_deleted(cid, name) {
                     // `delete C.prototype.x` recorded the accessor as removed.
@@ -1068,7 +1068,7 @@ pub(crate) unsafe fn symbol_own_property_descriptor(obj_value: f64, key_value: f
     let class_owner = if let Some(cid) = super::class_ref_id(obj_value) {
         Some((cid, super::class_prototype_ref_id(obj_value).is_none()))
     } else if owner != 0 {
-        super::class_registry::class_id_for_decl_prototype_object(owner).map(|cid| (cid, false))
+        super::class_registry::class_id_for_prototype_object(owner).map(|cid| (cid, false))
     } else {
         None
     };
@@ -1575,7 +1575,7 @@ fn js_object_get_own_property_names_shape(obj_value: f64) -> f64 {
         // deletion of mirrored methods/constructor; accessors have no physical
         // slot, so their class deletion marker is authoritative.
         if let Some(class_id) =
-            super::class_registry::class_id_for_decl_prototype_object(obj as usize)
+            super::class_registry::class_id_for_prototype_object(obj as usize)
         {
             let mut physical = Vec::new();
             let mut sso_buf = [0u8; crate::value::SHORT_STRING_MAX_LEN];

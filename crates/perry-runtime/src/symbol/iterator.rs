@@ -55,7 +55,7 @@ pub unsafe extern "C" fn js_object_get_own_property_symbols(obj_f64: f64) -> i64
     // direct `C.prototype[sym]` dispatch does. A later assignment to the same
     // symbol is deduplicated below; class elements precede such assignments in
     // property-creation order.
-    let mut entries: Vec<(usize, u64)> = crate::object::class_id_for_decl_prototype_object(obj_key)
+    let mut entries: Vec<(usize, u64)> = crate::object::class_id_for_prototype_object(obj_key)
         .map(|class_id| {
             crate::object::class_own_symbol_member_keys(class_id, false)
                 .into_iter()

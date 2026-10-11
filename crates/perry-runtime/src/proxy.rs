@@ -1545,7 +1545,7 @@ fn own_set_descriptor(target: f64, key: f64) -> Option<OwnSetDescriptor> {
     if crate::object::obj_value_has_own_key(target, key) {
         return Some(OwnSetDescriptor::Data { writable: true });
     }
-    if let Some(class_id) = crate::object::class_id_for_decl_prototype_object(obj_ptr) {
+    if let Some(class_id) = crate::object::class_id_for_prototype_object(obj_ptr) {
         if let Some((_, setter)) = crate::object::class_own_accessor_ptrs(class_id, &key_name) {
             return Some(OwnSetDescriptor::NativeAccessor { setter_ptr: setter });
         }
