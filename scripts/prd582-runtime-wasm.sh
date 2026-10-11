@@ -7,7 +7,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 out=${CARGO_TARGET_DIR:-target}
 cargo rustc -p perry-runtime --release --no-default-features --target wasm32-wasip1 \
-    --crate-type cdylib -- -C link-arg=--allow-undefined -Z wasi-exec-model=reactor
+    --crate-type cdylib -j 12 -- -C link-arg=--allow-undefined -C link-arg=--export-table -C link-arg=--growable-table -Z wasi-exec-model=reactor
 rt="$out/wasm32-wasip1/release/perry_runtime.wasm"
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/prd582-runtime-wasm.XXXXXX")
 clang --target=wasm32 -O2 -nostdlib -Wl,--no-entry -Wl,--allow-undefined \
