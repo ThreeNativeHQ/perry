@@ -19,25 +19,13 @@ impl<'a> FuncEmitCtx<'a> {
                 match normalized {
                     "console" => match method.as_str() {
                         "log" => {
-                            for arg in args {
-                                self.emit_frame_begin(func, 1);
-                                self.emit_store_arg(func, 0, arg);
-                                self.emit_memcall_void(func, "console_log", 1);
-                            }
+                            self.emit_console(func, "log", args);
                         }
                         "warn" => {
-                            for arg in args {
-                                self.emit_frame_begin(func, 1);
-                                self.emit_store_arg(func, 0, arg);
-                                self.emit_memcall_void(func, "console_warn", 1);
-                            }
+                            self.emit_console(func, "warn", args);
                         }
                         "error" => {
-                            for arg in args {
-                                self.emit_frame_begin(func, 1);
-                                self.emit_store_arg(func, 0, arg);
-                                self.emit_memcall_void(func, "console_error", 1);
-                            }
+                            self.emit_console(func, "error", args);
                         }
                         _ => {}
                     },

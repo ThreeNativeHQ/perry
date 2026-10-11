@@ -51,27 +51,15 @@ impl<'a> FuncEmitCtx<'a> {
                     if let Expr::GlobalGet(_) = object.as_ref() {
                         match property.as_str() {
                             "log" => {
-                                for arg in args {
-                                    self.emit_frame_begin(func, 1);
-                                    self.emit_store_arg(func, 0, arg);
-                                    self.emit_memcall_void(func, "console_log", 1);
-                                }
+                                self.emit_console(func, "log", args);
                                 return true;
                             }
                             "warn" => {
-                                for arg in args {
-                                    self.emit_frame_begin(func, 1);
-                                    self.emit_store_arg(func, 0, arg);
-                                    self.emit_memcall_void(func, "console_warn", 1);
-                                }
+                                self.emit_console(func, "warn", args);
                                 return true;
                             }
                             "error" => {
-                                for arg in args {
-                                    self.emit_frame_begin(func, 1);
-                                    self.emit_store_arg(func, 0, arg);
-                                    self.emit_memcall_void(func, "console_error", 1);
-                                }
+                                self.emit_console(func, "error", args);
                                 return true;
                             }
                             _ => {}
@@ -261,6 +249,19 @@ impl<'a> FuncEmitCtx<'a> {
 
     /// The async-step state machine (`transform_async_to_generator` + `transform_generators`):
     /// the body runs in Wasm step closures; the runtime only chains promises (PRD-582).
+    /// console.log/warn/error: one argument goes straight through; any other count prints one
+    /// space-joined line from an args array, as the host console does (PRD-582).
+    pub(super) fn emit_console(&mut self, func: &mut Function, level: &str, args: &[Expr]) {
+        self.emit_frame_begin(func, 1);
+        if let [arg] = args {
+            self.emit_store_arg(func, 0, arg);
+            self.emit_memcall_void(func, &format!("console_{level}"), 1);
+        } else {
+            self.emit_store_arg(func, 0, &Expr::Array(args.to_vec()));
+            self.emit_memcall_void(func, &format!("console_{level}_multi"), 1);
+        }
+    }
+
     pub(super) fn try_emit_expr_async_step(&mut self, func: &mut Function, expr: &Expr) -> bool {
         match expr {
             Expr::IterResultSet(value, done) => {

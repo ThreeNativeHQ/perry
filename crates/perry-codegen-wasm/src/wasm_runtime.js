@@ -1633,6 +1633,8 @@ const __memDispatch = {
   console_warn: (val) => { console.warn(val); },
   console_error: (val) => { console.error(val); },
   console_log_multi: (args) => { if (Array.isArray(args)) console.log(...args); },
+  console_warn_multi: (args) => { if (Array.isArray(args)) console.warn(...args); },
+  console_error_multi: (args) => { if (Array.isArray(args)) console.error(...args); },
 
   // String core — args are already decoded JS values via __bitsToJsValue
   string_concat: (a, b) => String(a) + String(b),

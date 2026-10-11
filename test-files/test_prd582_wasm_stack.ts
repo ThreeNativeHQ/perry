@@ -25,3 +25,6 @@ console.log(`${values.join(",")} ${reads}`);
 // Loose equality goes through the js_loose_eq bridge.
 const looseValues: unknown[] = [undefined, 0, "1"];
 console.log(looseValues.map((v) => `${v == null} ${v != 1}`).join(";"));
+
+// Several arguments print on one line, separated by spaces.
+console.log("multi", 1, true);

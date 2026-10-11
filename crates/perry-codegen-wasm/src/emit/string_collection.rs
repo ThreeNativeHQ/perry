@@ -181,6 +181,8 @@ impl WasmModuleEmitter {
             "is_nan",
             "is_finite",
             "console_log_multi",
+            "console_warn_multi",
+            "console_error_multi",
             "class_set_parent",
             "try_start",
             "try_end",
