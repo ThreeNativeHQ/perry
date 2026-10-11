@@ -90,7 +90,7 @@ globalThis.__ffiImports = { bloom_init_window: ..., bloom_draw_rect: ... };
 await bootPerryWasm(wasmBase64, { bloom_init_window: ..., bloom_draw_rect: ... });
 ```
 
-**Auto-stub for missing imports.** The `ffi` namespace is wrapped in a `Proxy` so any FFI function the host doesn't provide is auto-stubbed with a no-op that returns `TAG_UNDEFINED`. This means apps that use native libraries (e.g. Hone Editor's 56 `hone_editor_*` functions) can still instantiate and run in the browser even without the native bindings — the relevant features are simply no-ops.
+**Missing imports fail at load.** The `ffi` namespace is wrapped in a `Proxy`: when the host does not provide an FFI function the module declares, instantiation throws `PERRY_WASM_FFI_MISSING: <name>`. Apps that use native libraries must bind every declared function (stubs are the host's explicit choice).
 
 ## Module-Level Constants
 

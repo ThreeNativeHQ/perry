@@ -15,3 +15,7 @@ perry-dispatch.workspace = true
 anyhow.workspace = true
 wasm-encoder = "0.254"
 base64.workspace = true
+wasmparser = "0.254"
+
+[dev-dependencies]
+perry-parser.workspace = true

@@ -213,57 +213,7 @@ impl<'a> FuncEmitCtx<'a> {
                 prefix,
                 ..
             } => {
-                // obj.prop++ or ++obj.prop
-                self.emit_expr(func, object);
-                let key_id = self
-                    .emitter
-                    .string_map
-                    .get(property.as_str())
-                    .copied()
-                    .unwrap_or(0);
-                let key_bits = (STRING_TAG << 48) | (key_id as u64);
-                // Get current value
-                // We need the object handle twice. Can't dup in WASM without locals.
-                // For simplicity: re-emit object (works if object is a simple expression)
-                self.emit_frame_begin(func, 2);
-                func.instruction(&Instruction::LocalSet(self.temp_local));
-                self.emit_slot_addr(func, 0);
-                func.instruction(&Instruction::LocalGet(self.temp_local));
-                func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
-                    offset: 0,
-                    align: 3,
-                    memory_index: 0,
-                }));
-                self.emit_store_const(func, 1, f64::from_bits(key_bits));
-                self.emit_memcall(func, "object_get", 2);
-                // Stack: [old_value_i64]
-                if *prefix {
-                    func.instruction(&Instruction::F64ReinterpretI64);
-                    func.instruction(&f64_const(1.0));
-                    match op {
-                        BinaryOp::Add => func.instruction(&Instruction::F64Add),
-                        BinaryOp::Sub => func.instruction(&Instruction::F64Sub),
-                        _ => func.instruction(&Instruction::F64Add),
-                    };
-                    func.instruction(&Instruction::I64ReinterpretF64);
-                    // Set new value
-                    self.emit_expr(func, object);
-                    func.instruction(&Instruction::I64Const(key_bits as i64));
-                    // Stack: [new_val, handle, key] — wrong order for object_set(handle, key, val)
-                    // We need to restructure. For now, just emit the value (prefix returns new)
-                    // This is imprecise but works for basic cases
-                } else {
-                    // postfix: return old, then update
-                    // For now, just do the increment and return new value (approximate)
-                    func.instruction(&Instruction::F64ReinterpretI64);
-                    func.instruction(&f64_const(1.0));
-                    match op {
-                        BinaryOp::Add => func.instruction(&Instruction::F64Add),
-                        BinaryOp::Sub => func.instruction(&Instruction::F64Sub),
-                        _ => func.instruction(&Instruction::F64Add),
-                    };
-                    func.instruction(&Instruction::I64ReinterpretF64);
-                }
+                self.emit_index_update(func, object, &Expr::String(property.clone()), op, *prefix);
             }
 
             Expr::IndexGet { object, index } => {
@@ -359,49 +309,7 @@ impl<'a> FuncEmitCtx<'a> {
                 prefix,
                 ..
             } => {
-                // arr[i]++ / ++arr[i].  Pre-fix this only computed the updated
-                // value and left it on the stack; it never called the indexed
-                // setter, so module-level arrays appeared immutable on the
-                // web/wasm target (#1993).
-                //
-                // Evaluate object and index for the get, compute the new value,
-                // persist it through the same dynamic setter used by IndexSet,
-                // then return the JS-compatible prefix/postfix result.
-                self.emit_frame_begin(func, 2);
-                self.emit_store_arg(func, 0, object);
-                self.emit_store_arg(func, 1, index);
-                self.emit_memcall(func, "object_get_dynamic", 2);
-                if !*prefix {
-                    // Save the old value for the postfix expression result.
-                    func.instruction(&Instruction::LocalTee(self.temp_local));
-                }
-                func.instruction(&Instruction::F64ReinterpretI64);
-                func.instruction(&f64_const(1.0));
-                match op {
-                    BinaryOp::Add => func.instruction(&Instruction::F64Add),
-                    BinaryOp::Sub => func.instruction(&Instruction::F64Sub),
-                    _ => func.instruction(&Instruction::F64Add),
-                };
-                func.instruction(&Instruction::I64ReinterpretF64);
-                func.instruction(&Instruction::LocalSet(self.temp_result_local));
-
-                self.emit_frame_begin(func, 3);
-                self.emit_store_arg(func, 0, object);
-                self.emit_store_arg(func, 1, index);
-                self.emit_slot_addr(func, 2);
-                func.instruction(&Instruction::LocalGet(self.temp_result_local));
-                func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
-                    offset: 0,
-                    align: 3,
-                    memory_index: 0,
-                }));
-                self.emit_memcall_void(func, "object_set_dynamic", 3);
-
-                if *prefix {
-                    func.instruction(&Instruction::LocalGet(self.temp_result_local));
-                } else {
-                    func.instruction(&Instruction::LocalGet(self.temp_local));
-                }
+                self.emit_index_update(func, object, index, op, *prefix);
             }
 
             Expr::ObjectKeys(obj) => {
@@ -478,4 +386,45 @@ impl<'a> FuncEmitCtx<'a> {
         }
         true
     }
+
+    fn emit_index_update(&mut self, func: &mut Function, object: &Expr, index: &Expr, op: &BinaryOp, prefix: bool) {
+        // Keep the receiver and key in a frame so getters/callbacks cannot re-evaluate them.
+        self.emit_frame_begin(func, 4);
+        self.emit_store_arg(func, 0, object);
+        self.emit_store_arg(func, 1, index);
+        self.emit_slot_addr(func, 0);
+        func.instruction(&Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+        func.instruction(&Instruction::LocalSet(self.temp_local));
+        self.emit_slot_addr(func, 3);
+        func.instruction(&Instruction::LocalGet(self.temp_local));
+        func.instruction(&Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+        self.emit_memcall(func, "object_get_dynamic", 2);
+        func.instruction(&Instruction::LocalSet(self.temp_result_local));
+        // Reopen the same frame: the get only replaced slot 0 with its result.
+        self.emit_frame_begin(func, 4);
+        self.emit_slot_addr(func, 2);
+        func.instruction(&Instruction::LocalGet(self.temp_result_local));
+        func.instruction(&Instruction::F64ReinterpretI64);
+        func.instruction(&f64_const(1.0));
+        match op {
+            BinaryOp::Sub => func.instruction(&Instruction::F64Sub),
+            _ => func.instruction(&Instruction::F64Add),
+        };
+        func.instruction(&Instruction::I64ReinterpretF64);
+        func.instruction(&Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+        if prefix {
+            self.emit_slot_addr(func, 2);
+            func.instruction(&Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+            func.instruction(&Instruction::LocalSet(self.temp_result_local));
+        }
+        self.emit_slot_addr(func, 3);
+        func.instruction(&Instruction::I64Load(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+        func.instruction(&Instruction::LocalSet(self.temp_local));
+        self.emit_slot_addr(func, 0);
+        func.instruction(&Instruction::LocalGet(self.temp_local));
+        func.instruction(&Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+        self.emit_memcall_void(func, "object_set_dynamic", 3);
+        func.instruction(&Instruction::LocalGet(self.temp_result_local));
+    }
+
 }

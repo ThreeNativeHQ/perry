@@ -1431,12 +1431,13 @@ function buildImports() {
       ...(typeof __asyncFuncImpls !== 'undefined' ? __asyncFuncImpls : {}),
     },
     // FFI namespace: external native functions (e.g., bloom_init_window, bloom_draw_rect)
-    // Wrapped in Proxy so missing imports are auto-stubbed with no-ops returning
-    // NaN-boxed undefined as BigInt, allowing the WASM module to instantiate.
-    ffi: new Proxy(typeof __ffiImports !== 'undefined' ? __ffiImports : {}, {
+    // Wrapped in Proxy so a missing import fails instantiation by name instead of
+    // silently running as a no-op.
+    ffi: new Proxy(typeof __ffiImports !== 'undefined' && __ffiImports ? __ffiImports : {}, {
       get(target, prop) {
         if (prop in target) return target[prop];
-        return function ffiStub() { return TAG_UNDEFINED; };
+        if (typeof prop === 'string') throw new Error('PERRY_WASM_FFI_MISSING: ' + prop);
+        return undefined;
       },
     }),
   };

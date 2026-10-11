@@ -300,7 +300,7 @@ impl<'a> FuncEmitCtx<'a> {
                                         },
                                     ));
                                     self.emit_store_arg(func, 1, &args[0]);
-                                    self.emit_memcall(func, "string_char_at", 2);
+                                    self.emit_memcall(func, "string_charAt", 2);
                                 }
                                 "substring" if args.len() >= 2 => {
                                     self.emit_frame_begin(func, 3);
@@ -331,7 +331,7 @@ impl<'a> FuncEmitCtx<'a> {
                                         },
                                     ));
                                     self.emit_store_arg(func, 1, &args[0]);
-                                    self.emit_memcall(func, "string_index_of", 2);
+                                    self.emit_memcall(func, "string_indexOf", 2);
                                 }
                                 "slice" if args.len() >= 2 => {
                                     self.emit_frame_begin(func, 3);
@@ -361,7 +361,7 @@ impl<'a> FuncEmitCtx<'a> {
                                             memory_index: 0,
                                         },
                                     ));
-                                    self.emit_memcall(func, "string_to_lower_case", 1);
+                                    self.emit_memcall(func, "string_toLowerCase", 1);
                                 }
                                 "toUpperCase" => {
                                     self.emit_frame_begin(func, 1);
@@ -375,7 +375,7 @@ impl<'a> FuncEmitCtx<'a> {
                                             memory_index: 0,
                                         },
                                     ));
-                                    self.emit_memcall(func, "string_to_upper_case", 1);
+                                    self.emit_memcall(func, "string_toUpperCase", 1);
                                 }
                                 "trim" => {
                                     self.emit_frame_begin(func, 1);
@@ -426,7 +426,7 @@ impl<'a> FuncEmitCtx<'a> {
                                         },
                                     ));
                                     self.emit_store_arg(func, 1, &args[0]);
-                                    self.emit_memcall_i32(func, "string_starts_with", 2);
+                                    self.emit_memcall_i32(func, "string_startsWith", 2);
                                     func.instruction(&Instruction::If(
                                         wasm_encoder::BlockType::Result(ValType::I64),
                                     ));
@@ -448,7 +448,7 @@ impl<'a> FuncEmitCtx<'a> {
                                         },
                                     ));
                                     self.emit_store_arg(func, 1, &args[0]);
-                                    self.emit_memcall_i32(func, "string_ends_with", 2);
+                                    self.emit_memcall_i32(func, "string_endsWith", 2);
                                     func.instruction(&Instruction::If(
                                         wasm_encoder::BlockType::Result(ValType::I64),
                                     ));
@@ -517,7 +517,7 @@ impl<'a> FuncEmitCtx<'a> {
                                     ));
                                     self.emit_store_arg(func, 1, &args[0]);
                                     self.emit_store_arg(func, 2, &args[1]);
-                                    self.emit_memcall(func, "string_pad_start", 3);
+                                    self.emit_memcall(func, "string_padStart", 3);
                                 }
                                 "padEnd" if args.len() >= 2 => {
                                     self.emit_frame_begin(func, 3);
@@ -533,7 +533,7 @@ impl<'a> FuncEmitCtx<'a> {
                                     ));
                                     self.emit_store_arg(func, 1, &args[0]);
                                     self.emit_store_arg(func, 2, &args[1]);
-                                    self.emit_memcall(func, "string_pad_end", 3);
+                                    self.emit_memcall(func, "string_padEnd", 3);
                                 }
                                 // Array instance methods called via NativeMethodCall
                                 "push" if !args.is_empty() => {
@@ -682,7 +682,7 @@ impl<'a> FuncEmitCtx<'a> {
                                         },
                                     ));
                                     self.emit_store_arg(func, 1, &args[0]);
-                                    self.emit_memcall_void(func, "array_for_each", 2);
+                                    self.emit_memcall_void(func, "array_forEach", 2);
                                     func.instruction(&Instruction::I64Const(TAG_UNDEFINED as i64));
                                 }
                                 "find" if !args.is_empty() => {

@@ -432,13 +432,9 @@ impl<'a> FuncEmitCtx<'a> {
     /// Check if an expression produces a value on the stack
     pub(super) fn expr_has_value(&self, expr: &Expr) -> bool {
         match expr {
-            Expr::NativeMethodCall { module, method, .. } => {
+            Expr::NativeMethodCall { module, .. } => {
                 let normalized = module.strip_prefix("node:").unwrap_or(module);
                 if normalized == "console" {
-                    return false;
-                }
-                // void-returning array methods via NativeMethodCall
-                if matches!(method.as_str(), "forEach") {
                     return false;
                 }
                 true

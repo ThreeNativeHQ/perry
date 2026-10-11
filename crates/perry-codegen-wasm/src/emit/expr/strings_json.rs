@@ -33,7 +33,7 @@ impl<'a> FuncEmitCtx<'a> {
                 self.emit_frame_begin(func, 2);
                 self.emit_store_arg(func, 0, string);
                 self.emit_store_arg(func, 1, index);
-                self.emit_memcall(func, "string_char_at", 2);
+                self.emit_memcall(func, "string_charAt", 2);
             }
             Expr::StringCodePointAt { string, index } => {
                 // WASM stub: alias to char_code_at
