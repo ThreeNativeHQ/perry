@@ -54,6 +54,11 @@ pub(super) struct WasmModuleEmitter {
     pub(super) enum_values: BTreeMap<(String, String), EnumResolvedValue>,
     /// Global index for NaN-safe temp storage (global.set/get may preserve NaN in Firefox)
     pub(super) nan_temp_global: u32,
+    /// i32 bump pointer for boxed-local cells, placed past the initial memory (PRD-582).
+    pub(super) box_heap_global: u32,
+    /// (module, local) pairs some closure assigns: each lives in an 8-byte memory cell so the
+    /// closure and its enclosing function share one binding.
+    pub(super) boxed_locals: std::collections::BTreeSet<(usize, LocalId)>,
     /// Async function names (compiled to JS, not WASM)
     pub(super) async_func_imports: Vec<(String, u32, usize)>, // (name, import_idx, param_count)
     /// Generated JS code for async functions
@@ -119,6 +124,8 @@ impl WasmModuleEmitter {
             class_parent_map: BTreeMap::new(),
             enum_values: BTreeMap::new(),
             nan_temp_global: 0, // set during compile()
+            box_heap_global: 0, // set during compile()
+            boxed_locals: Default::default(),
             async_func_imports: Vec::new(),
             module_func_maps: Vec::new(),
             void_funcs: std::collections::BTreeSet::new(),

@@ -51,6 +51,9 @@ impl<'a> FuncEmitCtx<'a> {
                     func.instruction(&Instruction::GlobalGet(gidx));
                 } else if let Some(&idx) = self.local_map.get(id) {
                     func.instruction(&Instruction::LocalGet(idx));
+                    if self.is_boxed(id) {
+                        Self::emit_box_load(func);
+                    }
                 } else {
                     // Unknown local — push undefined
                     func.instruction(&Instruction::I64Const(TAG_UNDEFINED as i64));
@@ -67,8 +70,12 @@ impl<'a> FuncEmitCtx<'a> {
                     func.instruction(&Instruction::GlobalSet(gidx));
                     func.instruction(&Instruction::GlobalGet(gidx));
                 } else if let Some(&idx) = self.local_map.get(id) {
-                    // Tee: set and leave on stack
-                    func.instruction(&Instruction::LocalTee(idx));
+                    if self.is_boxed(id) {
+                        self.emit_box_store(func, idx);
+                    } else {
+                        // Tee: set and leave on stack
+                        func.instruction(&Instruction::LocalTee(idx));
+                    }
                 }
             }
             Expr::GlobalGet(id) => {
@@ -131,6 +138,22 @@ impl<'a> FuncEmitCtx<'a> {
                         func.instruction(&Instruction::I64ReinterpretF64);
                         func.instruction(&Instruction::GlobalSet(gidx));
                         // Old value (i64) is still on stack
+                    }
+                } else if let (true, Some(&idx)) = (self.is_boxed(id), self.local_map.get(id)) {
+                    func.instruction(&Instruction::LocalGet(idx));
+                    Self::emit_box_load(func);
+                    func.instruction(&Instruction::LocalTee(self.temp_result_local));
+                    func.instruction(&Instruction::F64ReinterpretI64);
+                    func.instruction(&f64_const(1.0));
+                    func.instruction(&match op {
+                        UpdateOp::Increment => Instruction::F64Add,
+                        UpdateOp::Decrement => Instruction::F64Sub,
+                    });
+                    func.instruction(&Instruction::I64ReinterpretF64);
+                    self.emit_box_store(func, idx);
+                    if !*prefix {
+                        func.instruction(&Instruction::Drop);
+                        func.instruction(&Instruction::LocalGet(self.temp_result_local));
                     }
                 } else if let Some(&idx) = self.local_map.get(id) {
                     if *prefix {

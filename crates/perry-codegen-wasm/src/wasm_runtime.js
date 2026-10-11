@@ -4899,6 +4899,14 @@ function __classDispatch(objVal, mname, rawArgs) {
       cls = classParentTable[cls] || null;
     }
   }
+  // 1b) A field that holds a Perry closure or a host function: `obj.fn(...)` (PRD-582).
+  if (objVal && typeof objVal === 'object') {
+    const field = objVal[mname];
+    if (typeof field === 'function') return field.apply(objVal, rawArgs);
+    if (field && typeof field === 'object' && typeof field.funcIdx !== 'undefined') {
+      return callWasmClosure(field, ...rawArgs);
+    }
+  }
   // 2) Try UI widget/state method dispatch
   const uiFnName = __uiMethodMap[mname];
   if (uiFnName) {

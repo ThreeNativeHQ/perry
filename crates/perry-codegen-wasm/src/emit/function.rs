@@ -56,6 +56,7 @@ impl WasmModuleEmitter {
         let wasm_returns_i64 =
             force_returning || hir_func.body.iter().any(has_return) || hir_func.name == "main";
         let mut ctx = FuncEmitCtx::new(self, &local_map, temp_local_idx, temp_i32_idx);
+        ctx.emit_box_params(&mut func, &hir_func.params);
 
         for stmt in &hir_func.body {
             ctx.emit_stmt(&mut func, stmt, wasm_returns_i64);
@@ -103,6 +104,7 @@ impl WasmModuleEmitter {
         let mut func = Function::new(locals);
 
         let mut ctx = FuncEmitCtx::new(self, &local_map, temp_local_idx, temp_i32_idx);
+        ctx.emit_box_params(&mut func, params);
         let _has_ret = body.iter().any(has_return);
 
         for stmt in body {
@@ -316,6 +318,69 @@ impl<'a> FuncEmitCtx<'a> {
     /// back to `TAG_UNDEFINED`. Without this, Array* HIR nodes that reference a
     /// top-level `const xs = []` were pushing `I64Const(0)` into the temp — see
     /// Issue #133 item 3.
+    /// A local some closure assigns lives in a memory cell; its Wasm local holds the address.
+    pub(super) fn is_boxed(&self, id: &LocalId) -> bool {
+        self.emitter.boxed_locals.contains(&(self.emitter.current_mod_idx, *id))
+    }
+
+    const CELL: wasm_encoder::MemArg = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+
+    /// [address i64] -> [value i64]
+    pub(super) fn emit_box_load(func: &mut Function) {
+        func.instruction(&Instruction::I32WrapI64);
+        func.instruction(&Instruction::I64Load(Self::CELL));
+    }
+
+    /// [value i64] -> [address i64]. Bump-allocates the cell past the initial memory and grows the
+    /// memory by 1 MiB when full; a failed grow traps on the store.
+    // ponytail: cells are never freed; a GC'd cell heap when the value runtime moves into Wasm.
+    pub(super) fn emit_box_new(&self, func: &mut Function) {
+        let heap = self.emitter.box_heap_global;
+        func.instruction(&Instruction::LocalSet(self.temp_local));
+        func.instruction(&Instruction::GlobalGet(heap));
+        func.instruction(&Instruction::I32Const(8));
+        func.instruction(&Instruction::I32Add);
+        func.instruction(&Instruction::MemorySize(0));
+        func.instruction(&Instruction::I32Const(16));
+        func.instruction(&Instruction::I32Shl);
+        func.instruction(&Instruction::I32GtU);
+        func.instruction(&Instruction::If(wasm_encoder::BlockType::Empty));
+        func.instruction(&Instruction::I32Const(16));
+        func.instruction(&Instruction::MemoryGrow(0));
+        func.instruction(&Instruction::Drop);
+        func.instruction(&Instruction::End);
+        func.instruction(&Instruction::GlobalGet(heap));
+        func.instruction(&Instruction::LocalGet(self.temp_local));
+        func.instruction(&Instruction::I64Store(Self::CELL));
+        func.instruction(&Instruction::GlobalGet(heap));
+        func.instruction(&Instruction::I64ExtendI32U);
+        func.instruction(&Instruction::GlobalGet(heap));
+        func.instruction(&Instruction::I32Const(8));
+        func.instruction(&Instruction::I32Add);
+        func.instruction(&Instruction::GlobalSet(heap));
+    }
+
+    /// [value i64] -> [value i64], stored into the cell local `idx` points at.
+    pub(super) fn emit_box_store(&self, func: &mut Function, idx: u32) {
+        func.instruction(&Instruction::LocalSet(self.temp_local));
+        func.instruction(&Instruction::LocalGet(idx));
+        func.instruction(&Instruction::I32WrapI64);
+        func.instruction(&Instruction::LocalGet(self.temp_local));
+        func.instruction(&Instruction::I64Store(Self::CELL));
+        func.instruction(&Instruction::LocalGet(self.temp_local));
+    }
+
+    /// Moves each boxed parameter's incoming value into a fresh cell.
+    pub(super) fn emit_box_params(&self, func: &mut Function, params: &[Param]) {
+        for param in params {
+            if let (true, Some(&idx)) = (self.is_boxed(&param.id), self.local_map.get(&param.id)) {
+                func.instruction(&Instruction::LocalGet(idx));
+                self.emit_box_new(func);
+                func.instruction(&Instruction::LocalSet(idx));
+            }
+        }
+    }
+
     pub(super) fn emit_local_or_global_get(&self, func: &mut Function, id: &LocalId) {
         if let Some(&gidx) = self
             .emitter
@@ -325,6 +390,9 @@ impl<'a> FuncEmitCtx<'a> {
             func.instruction(&Instruction::GlobalGet(gidx));
         } else if let Some(&idx) = self.local_map.get(id) {
             func.instruction(&Instruction::LocalGet(idx));
+            if self.is_boxed(id) {
+                Self::emit_box_load(func);
+            }
         } else {
             func.instruction(&Instruction::I64Const(TAG_UNDEFINED as i64));
         }

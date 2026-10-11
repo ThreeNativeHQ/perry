@@ -24,6 +24,9 @@ impl<'a> FuncEmitCtx<'a> {
                 {
                     func.instruction(&Instruction::GlobalSet(gidx));
                 } else if let Some(&idx) = self.local_map.get(id) {
+                    if self.is_boxed(id) {
+                        self.emit_box_new(func);
+                    }
                     func.instruction(&Instruction::LocalSet(idx));
                 } else {
                     func.instruction(&Instruction::Drop);
@@ -349,6 +352,9 @@ impl<'a> FuncEmitCtx<'a> {
                         self.emit_frame_begin(func, 0);
                         self.emit_memcall(func, "get_exception", 0);
                         if let Some(&local_idx) = self.local_map.get(param_id) {
+                            if self.is_boxed(param_id) {
+                                self.emit_box_new(func);
+                            }
                             func.instruction(&Instruction::LocalSet(local_idx));
                         } else {
                             func.instruction(&Instruction::Drop);

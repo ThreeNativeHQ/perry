@@ -602,6 +602,7 @@ impl WasmModuleEmitter {
                 }
             }
             for (fid, params, body, caps, mut_caps) in module_closures {
+                self.boxed_locals.extend(mut_caps.iter().map(|id| (mod_idx, *id)));
                 closure_funcs.push((fid, params, body, caps, mut_caps, mod_idx));
             }
         }
@@ -1028,6 +1029,8 @@ impl WasmModuleEmitter {
         // Add a NaN-safe temp global for mem_store_slot (Firefox canonicalizes locals)
         self.nan_temp_global = self.num_globals;
         self.num_globals += 1;
+        self.box_heap_global = self.num_globals;
+        self.num_globals += 1;
 
         // Build the WASM module
         let mut wasm_module = Module::new();
@@ -1233,6 +1236,11 @@ impl WasmModuleEmitter {
                             shared: false,
                         },
                         &wasm_encoder::ConstExpr::i32_const(0x10000),
+                    );
+                } else if g == self.box_heap_global {
+                    global_section.global(
+                        GlobalType { val_type: ValType::I32, mutable: true, shared: false },
+                        &wasm_encoder::ConstExpr::i32_const((pages * 65536) as i32),
                     );
                 } else {
                     // Regular i64 global for module-level variables (NaN-boxed)
