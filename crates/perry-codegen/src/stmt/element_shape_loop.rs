@@ -743,7 +743,7 @@ fn match_element_shape_versioned_loop(
         return None;
     }
     let class = ctx.classes.get(&class_name)?;
-    if !class.computed_members.is_empty() {
+    if class.has_string_keyable_computed_members() {
         return None;
     }
     // An `extends`-ing element class would put the field's slot behind an

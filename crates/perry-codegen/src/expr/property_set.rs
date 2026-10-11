@@ -96,7 +96,7 @@ fn with_class_store_operands<'f, R>(
 pub(crate) fn class_has_computed_runtime_members(ctx: &FnCtx<'_>, class_name: &str) -> bool {
     ctx.classes
         .get(class_name)
-        .is_some_and(|class| !class.computed_members.is_empty())
+        .is_some_and(|class| class.has_string_keyable_computed_members())
 }
 
 /// #7288: the SLOPPY-mode arm of the #5093 class-field raw-f64 store.

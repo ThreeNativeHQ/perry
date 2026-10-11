@@ -5263,7 +5263,7 @@ fn match_class_field_versioned_loop(
         return None;
     }
     let class = ctx.classes.get(&class_name)?;
-    if !class.computed_members.is_empty() {
+    if class.has_string_keyable_computed_members() {
         return None;
     }
     let expected_class_id = *ctx.class_ids.get(&class_name)?;

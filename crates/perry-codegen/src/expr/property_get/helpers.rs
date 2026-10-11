@@ -31,7 +31,7 @@ use crate::types::{DOUBLE, I1, I32, I64, I8, PTR};
 pub(crate) fn class_has_computed_runtime_members(ctx: &FnCtx<'_>, class_name: &str) -> bool {
     ctx.classes
         .get(class_name)
-        .is_some_and(|class| !class.computed_members.is_empty())
+        .is_some_and(|class| class.has_string_keyable_computed_members())
 }
 
 pub(crate) fn lower_runtime_property_get_by_name(

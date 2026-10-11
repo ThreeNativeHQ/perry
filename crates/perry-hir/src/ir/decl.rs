@@ -290,6 +290,21 @@ pub struct Class {
 }
 
 impl Class {
+    /// B22: does any computed member's key possibly evaluate to a string?
+    ///
+    /// The computed-member gates ("instances have keys the packed layout does
+    /// not describe") exist for keys that could alias a field name. A key that
+    /// lowers to `SymbolFor(<string literal>)` — every `Symbol.<well-known>`
+    /// fold, so three's `*[Symbol.iterator]` on Vector3/Quaternion/Color — is a
+    /// symbol and lives on the prototype; it cannot name `this.<ident>`.
+    /// Without this, one iterator sent every field read and write of the class
+    /// to by-name runtime lookups.
+    pub fn has_string_keyable_computed_members(&self) -> bool {
+        self.computed_members.iter().any(|member| {
+            !matches!(&member.key_expr, Expr::SymbolFor(key) if matches!(key.as_ref(), Expr::String(_)))
+        })
+    }
+
     /// True for the metadata-only stub `compile_module` synthesizes for a class
     /// IMPORTED from another module (`perry-codegen/src/codegen/mod.rs`, "Build
     /// a stub Class with the minimum fields the codegen needs").

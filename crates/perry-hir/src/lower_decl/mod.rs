@@ -11,6 +11,8 @@
 mod block;
 mod body_stmt;
 mod class_captures;
+#[cfg(test)]
+mod class_captures_b22_tests;
 mod class_computed;
 mod class_decl;
 mod class_members;

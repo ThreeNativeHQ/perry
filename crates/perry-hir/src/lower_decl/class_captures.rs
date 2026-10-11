@@ -298,14 +298,17 @@ pub fn synthesize_class_captures(
     for m in methods.iter_mut() {
         let id_map = rewrite_method_body(ctx, &mut m.body);
         append_self_sites(&mut m.body, &id_map);
+        prune_unused_capture_prologue(&mut m.body, &id_map);
     }
     for (_, g) in getters.iter_mut() {
         let id_map = rewrite_method_body(ctx, &mut g.body);
         append_self_sites(&mut g.body, &id_map);
+        prune_unused_capture_prologue(&mut g.body, &id_map);
     }
     for (_, s) in setters.iter_mut() {
         let id_map = rewrite_method_body(ctx, &mut s.body);
         append_self_sites(&mut s.body, &id_map);
+        prune_unused_capture_prologue(&mut s.body, &id_map);
     }
     for member in computed_members
         .iter_mut()
@@ -313,6 +316,7 @@ pub fn synthesize_class_captures(
     {
         let id_map = rewrite_method_body(ctx, &mut member.function.body);
         append_self_sites(&mut member.function.body, &id_map);
+        prune_unused_capture_prologue(&mut member.function.body, &id_map);
     }
 
     // 2b. STATIC methods: no instance carries `__perry_cap_*` fields, so
@@ -569,6 +573,18 @@ pub fn synthesize_class_captures(
         // at which `this` is known to be bound, so skip the early stash. The
         // end-of-body and before-`return` stashes below still run.
         early_capture_stash_slot(&mut ctor.body)
+    } else if ctor_body_cannot_reach_methods(
+        &ctor.body[rebind_count..],
+        fields,
+        setters,
+        computed_members,
+    ) {
+        // B22: nothing before the end-of-body stash can run a method, so the
+        // early stash has no reader. Skipping it keeps the hidden fields
+        // after the constructor's own fields, the order the canonical class
+        // layout declares (`fields`): stashing first made every instance's
+        // shape diverge from it and sent each class-field access by name.
+        None
     } else {
         Some(rebind_count)
     };
@@ -604,6 +620,97 @@ pub fn synthesize_class_captures(
     //    `LocalGet(outer_id)` per captured outer id at every
     //    construction site.
     ctx.register_class_captures(name.to_string(), captures_vec);
+}
+
+/// B22: can a non-derived constructor body run any user method before its
+/// end-of-body capture stash? Only the default-parameter fill (`if (p ===
+/// undefined) p = <literal>`), `let`s and `this.<f> = <local or literal>`
+/// stores of fields without a class setter are allowed; field initializers
+/// must be literals and no computed member may name a string key. Anything
+/// else (a call, a getter read, a setter store) keeps the early stash.
+fn ctor_body_cannot_reach_methods(
+    body: &[Stmt],
+    fields: &[ClassField],
+    setters: &[(String, Function)],
+    computed_members: &[ClassComputedMember],
+) -> bool {
+    fn pure(expr: &Expr) -> bool {
+        matches!(
+            expr,
+            Expr::LocalGet(_)
+                | Expr::Undefined
+                | Expr::Null
+                | Expr::Bool(_)
+                | Expr::Number(_)
+                | Expr::Integer(_)
+                | Expr::String(_)
+        )
+    }
+    let plain_field = |key: &str| !setters.iter().any(|(name, _)| name == key);
+    let stmt_ok = |stmt: &Stmt| match stmt {
+        Stmt::Let { init, .. } => init.as_ref().is_none_or(pure),
+        Stmt::If {
+            condition,
+            then_branch,
+            else_branch: None,
+        } => {
+            matches!(condition, Expr::Compare { left, right, .. } if pure(left) && pure(right))
+                && then_branch
+                    .iter()
+                    .all(|s| matches!(s, Stmt::Expr(Expr::LocalSet(_, value)) if pure(value)))
+        }
+        Stmt::Expr(Expr::PropertySet { object, property, value }) => {
+            matches!(object.as_ref(), Expr::This) && plain_field(property) && pure(value)
+        }
+        Stmt::Expr(Expr::PutValueSet { target, key, value, receiver, .. }) => {
+            matches!(target.as_ref(), Expr::This)
+                && matches!(receiver.as_ref(), Expr::This)
+                && matches!(key.as_ref(), Expr::String(k) if plain_field(k))
+                && pure(value)
+        }
+        _ => false,
+    };
+    computed_members.iter().all(|member| {
+        matches!(&member.key_expr, Expr::SymbolFor(key) if matches!(key.as_ref(), Expr::String(_)))
+    }) && fields.iter().all(|f| f.key_expr.is_none() && f.init.as_ref().is_none_or(pure))
+        && body.iter().all(stmt_ok)
+}
+
+/// B22: drop the capture-prologue lets an instance member never reads.
+///
+/// `rewrite_method_body` rebinds EVERY class capture at entry, and each rebind
+/// is a by-name `this.__perry_cap_*` read plus a snapshot call. Those calls are
+/// opaque to LLVM, so a method that uses none of the captures (three's
+/// `Vector3.set` inside `defineMath`) paid two dynamic reads per call — and on
+/// a receiver without the hidden field (an `Object.create(proto)` wrapper) the
+/// read is a full prototype-chain miss. The init is side-effect free (a field
+/// read of `this` with a snapshot fallback), so removing an unreferenced
+/// binding is unobservable. Runs after `append_self_sites`, whose appended
+/// `new <Self>(…)` args are references and keep their rebind.
+fn prune_unused_capture_prologue(
+    body: &mut Vec<Stmt>,
+    id_map: &std::collections::HashMap<LocalId, LocalId>,
+) {
+    let rebinds: std::collections::HashSet<LocalId> = id_map.values().copied().collect();
+    let prologue_len = body
+        .iter()
+        .take_while(|stmt| matches!(stmt, Stmt::Let { id, .. } if rebinds.contains(id)))
+        .count();
+    if prologue_len == 0 {
+        return;
+    }
+    let mut refs = Vec::new();
+    let mut visited = std::collections::HashSet::new();
+    for stmt in body.iter().skip(prologue_len) {
+        crate::analysis::collect_local_refs_stmt(stmt, &mut refs, &mut visited);
+    }
+    let used: std::collections::HashSet<LocalId> = refs.into_iter().collect();
+    let mut index = 0;
+    body.retain(|stmt| {
+        let in_prologue = index < prologue_len;
+        index += 1;
+        !in_prologue || matches!(stmt, Stmt::Let { id, .. } if used.contains(id))
+    });
 }
 
 /// Where the early `this.__perry_cap_* = param` stashes go in a DERIVED
