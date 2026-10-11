@@ -66,7 +66,7 @@ unsafe fn alloc_iterator_backing(backing: f64, kind: i32) -> f64 {
     // The iterator allocation and the lazy prototype bootstrap can both
     // collect. Keep the incoming backing and the new iterator relocatable.
     let backing_h = scope.root_nanbox_f64(backing);
-    let obj_h = scope.root_raw_mut_ptr(js_object_alloc(ARRAY_ITERATOR_CLASS_ID, 3));
+    let obj_h = scope.root_raw_mut_ptr(js_object_alloc(ARRAY_ITERATOR_CLASS_ID, 6));
     // Field 0: backing array (NaN-boxed pointer so the GC scanner keeps it).
     obj_h.with_mut_ptr(|obj| {
         js_object_set_field(
@@ -620,7 +620,7 @@ pub unsafe fn dispatch_array_iterator_method(
     iter_obj: *mut ObjectHeader,
     method_name: &str,
 ) -> f64 {
-    dispatch_array_iterator_method_inner(iter_obj, method_name, true)
+    dispatch_array_iterator_method_inner(iter_obj, method_name, true, false)
 }
 
 /// Builtin advance only — the canonical prototype thunk's entry (#9019):
@@ -632,13 +632,18 @@ pub(crate) unsafe fn dispatch_array_iterator_method_builtin(
     iter_obj: *mut ObjectHeader,
     method_name: &str,
 ) -> f64 {
-    dispatch_array_iterator_method_inner(iter_obj, method_name, false)
+    dispatch_array_iterator_method_inner(iter_obj, method_name, false, false)
+}
+
+pub(crate) unsafe fn dispatch_array_iterator_for_of_next(iter_obj: *mut ObjectHeader) -> f64 {
+    dispatch_array_iterator_method_inner(iter_obj, "next", true, true)
 }
 
 unsafe fn dispatch_array_iterator_method_inner(
     iter_obj: *mut ObjectHeader,
     method_name: &str,
     honor_override: bool,
+    emit_cached: bool,
 ) -> f64 {
     // #7475: the raw `iter_obj` parameter is not a GC root, and this function
     // allocates in several places — `js_object_set_field` (shape transition /
@@ -655,6 +660,11 @@ unsafe fn dispatch_array_iterator_method_inner(
     // the kind's done-value (`null` for KIND_VALUES_NULL_DONE, `undefined`
     // otherwise).
     let kind = f64::from_bits(js_object_get_field(iter_obj(), 2).bits()) as i32;
+    // Only compiler-owned for-of results on ordinary array iterators are reusable.
+    let emit_cached = emit_cached && matches!(kind, KIND_VALUES | KIND_KEYS | KIND_ENTRIES);
+    let emit_result = |value, done| {
+        crate::collection_iter_object::emit_iter_result(&scope, &iter_h, emit_cached, value, done)
+    };
     let done_value = || {
         if kind == KIND_VALUES_NULL_DONE {
             JSValue::null()
@@ -695,7 +705,7 @@ unsafe fn dispatch_array_iterator_method_inner(
                 if kind == KIND_VALUES_NULL_DONE {
                     return make_sqlite_iter_result(done_value(), true);
                 }
-                return make_iter_result(done_value(), true);
+                return emit_result(done_value(), true);
             }
             let backing_ptr = js_nanbox_get_pointer(backing_f64);
             // Field 1: current index.
@@ -718,7 +728,7 @@ unsafe fn dispatch_array_iterator_method_inner(
                     return make_sqlite_iter_result(done_value(), true);
                 }
                 js_object_set_field(iter_obj(), 0, JSValue::undefined());
-                return make_iter_result(done_value(), true);
+                return emit_result(done_value(), true);
             }
 
             // Advance the stored cursor before computing the value so a
@@ -762,7 +772,7 @@ unsafe fn dispatch_array_iterator_method_inner(
             if kind == KIND_VALUES_NULL_DONE {
                 make_sqlite_iter_result(JSValue::from_bits(value_h.get_nanbox_u64()), false)
             } else {
-                make_iter_result(JSValue::from_bits(value_h.get_nanbox_u64()), false)
+                emit_result(JSValue::from_bits(value_h.get_nanbox_u64()), false)
             }
         }
         // Iterators are themselves iterable — `[Symbol.iterator]()` on one

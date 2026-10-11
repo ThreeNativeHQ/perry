@@ -433,7 +433,7 @@ unsafe fn dispatch_set_iterator_method_emit(
 /// unobservable, and it deletes the per-element allocation that dominated
 /// generic iteration. The cache lives in the iterator object's field 5, so
 /// the GC traces and rewrites it like any other field.
-unsafe fn emit_iter_result(
+pub(crate) unsafe fn emit_iter_result(
     scope: &crate::gc::RuntimeHandleScope,
     iter_h: &crate::gc::RuntimeHandle,
     emit_cached: bool,
@@ -469,10 +469,10 @@ unsafe fn emit_iter_result(
 /// One fused `IteratorNext` for the `for…of` desugar: advance + result in a
 /// single runtime call.
 ///
-/// A builtin Map/Set iterator advances in place and reuses its cached result
+/// A builtin Array/Map/Set iterator advances in place and reuses its cached result
 /// object (see [`emit_iter_result`]); the override probe inside the
 /// dispatcher still runs first, so a patched `next` wins exactly as it does
-/// on the manual path. Every other receiver — array iterators, generators,
+/// on the manual path. Every other receiver — generators,
 /// user iterators — takes the arm at the bottom, which is byte-for-byte the
 /// two-call desugar this entry replaces: the dynamic `.next()` dispatch
 /// followed by spec IteratorNext result validation.
@@ -491,6 +491,14 @@ pub unsafe extern "C-unwind" fn js_for_of_next(iter: f64) -> f64 {
                     // patched own `next` (#9019) can return anything, and
                     // `for…of` must throw the same TypeError the generic arm
                     // throws rather than hand the desugar a primitive.
+                    if class_id == crate::array::ARRAY_ITERATOR_CLASS_ID
+                        && header._reserved & crate::gc::OBJ_FLAG_HAS_DESCRIPTORS == 0
+                        && crate::value::addr_class::ordinary_object_without_view_brand(raw)
+                    {
+                        return crate::symbol::js_iterator_result_validate(
+                            crate::array::dispatch_array_iterator_for_of_next(obj),
+                        );
+                    }
                     if class_id == MAP_ITERATOR_CLASS_ID {
                         return crate::symbol::js_iterator_result_validate(
                             dispatch_map_iterator_method_emit(obj, "next", true, true),
@@ -591,18 +599,72 @@ mod fused_for_of_tests {
         }
     }
 
-    /// A non-collection receiver takes the generic arm: dynamic `.next()`
-    /// dispatch plus validation — here, an array VALUES iterator object.
     #[test]
-    fn fused_next_routes_other_iterators_through_the_generic_arm() {
+    fn fused_array_next_reuses_result_with_live_length_and_fresh_manual_results() {
         unsafe {
-            let arr = crate::array::js_array_alloc(2);
-            crate::array::js_array_push_f64(arr, 7.0);
-            crate::array::js_array_push_f64(arr, 8.0);
-            let iter = crate::array::array_values_iter(js_nanbox_pointer(arr as i64));
-            assert_eq!(value_of(js_for_of_next(iter)), 7.0);
-            assert_eq!(value_of(js_for_of_next(iter)), 8.0);
-            assert!(done_of(js_for_of_next(iter)));
+            for kind in 0..3 {
+                let scope = crate::gc::RuntimeHandleScope::new();
+                let arr = crate::array::js_array_alloc(2);
+                crate::array::js_array_push_f64(arr, 7.0);
+                crate::array::js_array_push_f64(arr, 8.0);
+                let arr_h = scope.root_nanbox_f64(js_nanbox_pointer(arr as i64));
+                let iter = match kind {
+                    0 => crate::array::array_values_iter(arr_h.get_nanbox_f64()),
+                    1 => crate::array::array_keys_iter(arr_h.get_nanbox_f64()),
+                    _ => crate::array::array_entries_iter(arr_h.get_nanbox_f64()),
+                };
+                let iter_h = scope.root_nanbox_f64(iter);
+                let mut first_result: Option<crate::gc::RuntimeHandle> = None;
+                for (index, expected) in [7.0, 8.0, 9.0].into_iter().enumerate() {
+                    let result = js_for_of_next(iter_h.get_nanbox_f64());
+                    assert!(!done_of(result));
+                    if let Some(first) = &first_result {
+                        assert_eq!(first.get_nanbox_f64().to_bits(), result.to_bits());
+                    } else {
+                        first_result = Some(scope.root_nanbox_f64(result));
+                    }
+                    let value = value_of(result);
+                    match kind {
+                        0 => assert_eq!(value, expected),
+                        1 => assert_eq!(value, index as f64),
+                        _ => {
+                            let pair =
+                                js_nanbox_get_pointer(value) as *const crate::array::ArrayHeader;
+                            assert_eq!(crate::array::js_array_get_f64(pair, 0), index as f64);
+                            assert_eq!(crate::array::js_array_get_f64(pair, 1), expected);
+                        }
+                    }
+                    let cache = js_object_get_field(
+                        js_nanbox_get_pointer(iter_h.get_nanbox_f64()) as *mut ObjectHeader,
+                        5,
+                    );
+                    assert_eq!(
+                        cache.bits(),
+                        result.to_bits(),
+                        "array for-of must use its fused cached result"
+                    );
+                    if index == 0 {
+                        crate::array::js_array_push_f64(
+                            js_nanbox_get_pointer(arr_h.get_nanbox_f64())
+                                as *mut crate::array::ArrayHeader,
+                            9.0,
+                        );
+                    }
+                }
+                assert!(done_of(js_for_of_next(iter_h.get_nanbox_f64())));
+                let manual = crate::array::array_values_iter(arr_h.get_nanbox_f64());
+                let manual_h = scope.root_nanbox_f64(manual);
+                let first = scope.root_nanbox_f64(crate::array::dispatch_array_iterator_method(
+                    js_nanbox_get_pointer(manual_h.get_nanbox_f64()) as *mut ObjectHeader,
+                    "next",
+                ));
+                let second = crate::array::dispatch_array_iterator_method(
+                    js_nanbox_get_pointer(manual_h.get_nanbox_f64()) as *mut ObjectHeader,
+                    "next",
+                );
+                assert_ne!(first.get_nanbox_f64().to_bits(), second.to_bits());
+                assert_eq!(value_of(first.get_nanbox_f64()), 7.0);
+            }
         }
     }
 }
