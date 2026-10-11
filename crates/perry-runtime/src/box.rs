@@ -607,9 +607,9 @@ pub fn flush_released_boxes() {
 /// any box struct would silently make the link write out of bounds.
 const ALIGN_OF_BOX_CELL: usize = std::mem::align_of::<Box>();
 const _: () = {
-    assert!(std::mem::size_of::<Box>() == std::mem::size_of::<usize>());
-    assert!(std::mem::size_of::<I32Box>() == std::mem::size_of::<usize>());
-    assert!(std::mem::size_of::<BoolBox>() == std::mem::size_of::<usize>());
+    assert!(std::mem::size_of::<Box>() == 8 && std::mem::size_of::<usize>() <= 8); // the free-list link fits the cell
+    assert!(std::mem::size_of::<I32Box>() == 8 && std::mem::size_of::<usize>() <= 8); // the free-list link fits the cell
+    assert!(std::mem::size_of::<BoolBox>() == 8 && std::mem::size_of::<usize>() <= 8); // the free-list link fits the cell
     assert!(std::mem::align_of::<Box>() >= std::mem::align_of::<usize>());
     assert!(std::mem::align_of::<I32Box>() >= std::mem::align_of::<usize>());
     assert!(std::mem::align_of::<BoolBox>() >= std::mem::align_of::<usize>());

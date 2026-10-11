@@ -220,6 +220,13 @@ fn timestamp_to_local_components(secs: i64) -> (i32, u32, u32, u32, u32, u32, i6
     }
 }
 
+/// Wasm has no tz database; local time is UTC until the host passes an offset in (PRD-582).
+#[cfg(not(any(unix, windows)))]
+fn timestamp_to_local_components(secs: i64) -> (i32, u32, u32, u32, u32, u32, i64) {
+    let (y, m, d, h, mi, s) = timestamp_to_components(secs);
+    (y, m, d, h, mi, s, 0)
+}
+
 #[cfg(windows)]
 fn timestamp_to_local_components(secs: i64) -> (i32, u32, u32, u32, u32, u32, i64) {
     unsafe {

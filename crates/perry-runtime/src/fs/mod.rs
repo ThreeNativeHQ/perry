@@ -1725,6 +1725,8 @@ pub(crate) unsafe fn js_fs_symlink_result(target_value: f64, path_value: f64) ->
     let res = std::os::unix::fs::symlink(&target, &path);
     #[cfg(windows)]
     let res = std::os::windows::fs::symlink_file(&target, &path);
+    #[cfg(not(any(unix, windows)))]
+    let res: std::io::Result<()> = Err(std::io::ErrorKind::Unsupported.into());
     match res {
         Ok(()) => Ok(()),
         Err(err) => Err(build_fs_error_value_with_dest(

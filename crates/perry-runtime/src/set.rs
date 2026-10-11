@@ -581,6 +581,7 @@ pub struct SetHeader {
     pub used: u32,
 }
 
+#[cfg(target_pointer_width = "64")] // LLVM-codegen inline offsets; the Wasm emitter calls the runtime instead (PRD-582)
 const _: () = {
     assert!(std::mem::offset_of!(SetHeader, size) == 0);
     assert!(std::mem::offset_of!(SetHeader, capacity) == 4);

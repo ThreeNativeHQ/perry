@@ -137,6 +137,8 @@ const UNWIND_DATA_REG: (c_int, c_int) = (0, 1); // RAX, RDX
 const UNWIND_DATA_REG: (c_int, c_int) = (0, 1); // R0/X0, R1/X1
 #[cfg(target_arch = "x86")]
 const UNWIND_DATA_REG: (c_int, c_int) = (0, 2); // EAX, EDX
+#[cfg(target_family = "wasm")]
+const UNWIND_DATA_REG: (c_int, c_int) = (0, 1); // no DWARF unwinding on Wasm; never installed
 
 /// `PERRYJS\0` — vendor-tagged exception class. The personality is
 /// class-agnostic (every Perry landing pad is a catch-all), but the tag keeps
@@ -236,6 +238,7 @@ pub unsafe extern "C" fn perry_eh_personality(
             return _URC_FATAL_PHASE1_ERROR;
         }
     };
+    #[cfg(not(target_family = "wasm"))]
     if eh_trace_enabled() {
         let mut before: c_int = 0;
         let ip = _Unwind_GetIPInfo(context, &mut before);

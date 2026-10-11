@@ -44,7 +44,7 @@ pub extern "C" fn js_child_process_exec_sync(
     };
 
     // Execute the command using the shell, honoring `cwd`/`env` options.
-    #[cfg(unix)]
+    #[cfg(not(windows))]
     let mut command = {
         // Absolute path (Node's `exec` shell) keeps std on `posix_spawn`
         // instead of the `fork`+`exec` fallback a bare "sh" + `env` triggers
@@ -278,7 +278,7 @@ pub extern "C" fn js_child_process_exec(cmd_ptr: *const StringHeader, arg1: f64,
     // `arg1` slot (`exec(cmd, options, cb)`); when `arg1` is the callback
     // (`exec(cmd, cb)`) it's a closure, so `cp_apply_options` no-ops. `cwd`/
     // `env` from the options are applied here.
-    #[cfg(unix)]
+    #[cfg(not(windows))]
     let mut command = {
         // Absolute path (Node's `exec` shell) keeps std on `posix_spawn`
         // instead of the `fork`+`exec` fallback a bare "sh" + `env` triggers
@@ -484,7 +484,7 @@ fn cp_promisified_run(command: Command, cmd_str: String, opts: f64) -> f64 {
 
 extern "C" fn cp_promisified_exec(_closure: *const ClosureHeader, cmd_val: f64, opts: f64) -> f64 {
     let cmd = cp_value_to_string(cmd_val).unwrap_or_default();
-    #[cfg(unix)]
+    #[cfg(not(windows))]
     let mut command = {
         // Absolute path (Node's `exec` shell) keeps std on `posix_spawn`
         // instead of the `fork`+`exec` fallback a bare "sh" + `env` triggers

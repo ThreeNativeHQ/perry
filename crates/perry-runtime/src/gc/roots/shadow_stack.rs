@@ -149,6 +149,7 @@ pub const SHADOW_ENTRY_META_OFFSET: usize = 8;
 /// [`SLOT_ACTIVE`] as a public constant, for the codegen contract.
 pub const SHADOW_SLOT_ACTIVE_BIT: usize = SLOT_ACTIVE;
 
+#[cfg(target_pointer_width = "64")] // LLVM-codegen inline offsets; the Wasm emitter calls the runtime instead (PRD-582)
 const _: () = {
     assert!(std::mem::offset_of!(ShadowStackState, ptr) == SHADOW_STATE_PTR_OFFSET);
     assert!(std::mem::offset_of!(ShadowStackState, len) == SHADOW_STATE_LEN_OFFSET);

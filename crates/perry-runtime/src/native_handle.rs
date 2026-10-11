@@ -74,6 +74,10 @@ fn current_os_thread_id() -> u64 {
         }
         u64::from(unsafe { GetCurrentThreadId() })
     }
+    #[cfg(not(any(unix, windows)))]
+    {
+        1 // single-threaded Wasm
+    }
 }
 
 static MAIN_OS_THREAD_ID: AtomicU64 = AtomicU64::new(0);

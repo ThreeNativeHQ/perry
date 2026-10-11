@@ -87,6 +87,7 @@ pub extern "C" fn js_value_length_f64(value: f64) -> f64 {
             target_os = "tvos",
             target_os = "watchos",
             target_os = "visionos",
+            target_family = "wasm",
         ))]
         let heap_min: usize = 0x1000;
         #[cfg(not(any(
@@ -97,6 +98,7 @@ pub extern "C" fn js_value_length_f64(value: f64) -> f64 {
             target_os = "tvos",
             target_os = "watchos",
             target_os = "visionos",
+            target_family = "wasm",
         )))]
         let heap_min: usize = 0x200_0000_0000;
         if handle < heap_min || (handle as u64) >= 0x8000_0000_0000 {
@@ -201,6 +203,7 @@ pub extern "C" fn js_value_length_f64(value: f64) -> f64 {
         target_os = "tvos",
         target_os = "watchos",
         target_os = "visionos",
+        target_family = "wasm",
     ))]
     let raw_heap_min: u64 = 0x1000;
     #[cfg(not(any(
@@ -211,6 +214,7 @@ pub extern "C" fn js_value_length_f64(value: f64) -> f64 {
         target_os = "tvos",
         target_os = "watchos",
         target_os = "visionos",
+        target_family = "wasm",
     )))]
     let raw_heap_min: u64 = 0x200_0000_0000;
     if top16 == 0 && bits >= raw_heap_min && bits < 0x8000_0000_0000 {

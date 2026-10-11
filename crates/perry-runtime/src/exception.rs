@@ -51,6 +51,25 @@ extern "C" {
     fn longjmp(env: *mut i32, val: i32) -> !;
 }
 
+// ponytail: Wasm has no setjmp, so a runtime throw traps instead of reaching a catch. Upgrade
+// path: the Wasm exception-handling transport (PRD-582).
+#[cfg(target_family = "wasm")]
+mod wasm_sjlj {
+    #[no_mangle]
+    unsafe extern "C" fn perry_sjlj_try(
+        _env: *mut core::ffi::c_void,
+        body: unsafe extern "C" fn(*mut core::ffi::c_void),
+        ctx: *mut core::ffi::c_void,
+    ) -> core::ffi::c_int {
+        body(ctx);
+        0
+    }
+    #[no_mangle]
+    unsafe extern "C" fn longjmp(_env: *mut i32, _val: i32) -> ! {
+        std::process::abort()
+    }
+}
+
 // Maximum nesting depth for try blocks. Backed by fixed-size per-thread
 // arrays (see ExceptionState), so this directly sizes thread-local memory:
 // jump_buffers is MAX_TRY_DEPTH * sizeof(JmpBuf) (256 B each). 1024 covers

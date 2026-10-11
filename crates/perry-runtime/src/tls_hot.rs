@@ -204,7 +204,9 @@ pub(crate) struct HotTls {
 /// reading the wrong cell.
 pub const HOT_TLS_INLINE_STATE_OFFSET: usize = 8;
 pub const HOT_TLS_IMPLICIT_THIS_OFFSET: usize = 128;
+#[cfg(target_pointer_width = "64")] // LLVM-codegen inline offsets; the Wasm emitter calls the runtime instead (PRD-582)
 const _: () = assert!(std::mem::offset_of!(HotTls, inline_state) == HOT_TLS_INLINE_STATE_OFFSET);
+#[cfg(target_pointer_width = "64")] // LLVM-codegen inline offsets; the Wasm emitter calls the runtime instead (PRD-582)
 const _: () = assert!(std::mem::offset_of!(HotTls, implicit_this) == HOT_TLS_IMPLICIT_THIS_OFFSET);
 const _: () = assert!(std::mem::offset_of!(crate::arena::InlineArenaState, data) == 0);
 

@@ -174,6 +174,7 @@ pub fn is_valid_obj_ptr(ptr: *const u8) -> bool {
         target_os = "tvos",
         target_os = "watchos",
         target_os = "visionos",
+        target_family = "wasm",
     ))]
     const HEAP_MIN: u64 = 0x1000;
     #[cfg(not(any(
@@ -185,6 +186,7 @@ pub fn is_valid_obj_ptr(ptr: *const u8) -> bool {
         target_os = "tvos",
         target_os = "watchos",
         target_os = "visionos",
+        target_family = "wasm",
     )))]
     const HEAP_MIN: u64 = 0x200_0000_0000;
     #[cfg(all(

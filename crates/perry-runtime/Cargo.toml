@@ -322,13 +322,14 @@ timezone_provider = { version = "0.2.6", default-features = false, features = ["
 
 serde.workspace = true
 serde_json.workspace = true
+x509-cert = { version = "0.3", default-features = false }
+hickory-proto = { version = "0.26", default-features = false, features = ["std"] }
 hex = { workspace = true, optional = true }
 sha2 = { version = "0.11", optional = true }
 # TLS client identity callbacks run from the external net archive, before the
 # stdlib TLS module is necessarily linked. Keep the legacy peer-certificate
 # object builder in the runtime so that callback path has no stdlib symbol
 # dependency (the DER parser is dead-stripped from programs that never use it).
-x509-cert = { version = "0.3", default-features = false }
 unicode-normalization = { version = "0.1", optional = true }
 # #4877: extended grapheme-cluster / word / sentence segmentation backing
 # Intl.Segmenter (the grapheme path is what string-width@7+/wrap-ansi@9+ use,
@@ -354,13 +355,10 @@ url = { version = "2", optional = true }
 # std::net::UdpSocket (TCP fallback on truncation), so — unlike hickory-resolver
 # — it pulls NO tokio into the core runtime, matching net.rs's blocking-I/O
 # style. resolv-conf reads the system nameserver list from /etc/resolv.conf.
-hickory-proto = { version = "0.26", default-features = false, features = ["std"] }
-resolv-conf = "0.7"
 # #4911/#8515: real node:dgram UDP sockets. socket2 creates sockets so reuse
 # and IPv6-only options are applied before bind; std::net::UdpSocket then drives
 # send/recv and the common multicast/broadcast/TTL options. SockRef covers the
 # remaining multicast-interface and source-specific membership controls.
-socket2 = { workspace = true, features = ["all"] }
 # mimalloc is declared 64-bit-only below (see the target_pointer_width section) —
 # on arm64_32/ILP32 it is neither used nor compiled.
 
@@ -438,3 +436,7 @@ sha2 = "0.11"
 # the generated `[u16; 128]` arrays land in the binary. Already vetted in the
 # workspace lock (allsorts / lopdf depend on it).
 encoding_rs = "0.8"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+resolv-conf = "0.7"
+socket2 = { workspace = true, features = ["all"] }

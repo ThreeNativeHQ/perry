@@ -1672,6 +1672,7 @@ const _: () = assert!(std::mem::offset_of!(ObjectMeta, array_tail_object_hot) ==
 // `ObjectHeader.meta` then this word (perry-codegen `expr/index_get` and
 // `property_get/composed_ics.rs`). Keep in lock-step.
 const _: () = assert!(std::mem::offset_of!(ObjectMeta, elements) == 96);
+#[cfg(target_pointer_width = "64")] // LLVM-codegen inline offsets; the Wasm emitter calls the runtime instead (PRD-582)
 const _: () = assert!(std::mem::offset_of!(ObjectHeader, meta) == 8);
 const _: () = assert!(std::mem::size_of::<crate::array::ArrayHeader>() == 8);
 
