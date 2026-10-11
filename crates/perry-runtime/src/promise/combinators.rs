@@ -596,12 +596,21 @@ pub extern "C" fn js_promise_new_with_executor(
 ) -> *mut Promise {
     use crate::closure::js_closure_call2;
 
-    let promise = js_promise_new();
+    // The executor is user code that allocates, so a copying minor can move the
+    // promise and the reject closure while it runs. Keep both (and the executor,
+    // live across the two allocating calls below) in handles and re-read them.
+    let scope = crate::gc::RuntimeHandleScope::new();
+    let executor_h = scope.root_nanbox_f64(crate::value::js_nanbox_pointer(executor as i64));
+    let promise_h = scope.root_nanbox_f64(crate::value::js_nanbox_pointer(js_promise_new() as i64));
+    let get_promise = || crate::value::js_nanbox_get_pointer(promise_h.get_nanbox_f64()) as *mut Promise;
 
     // Create the resolve/reject pair sharing a [[AlreadyResolved]] guard, so
     // calling one disables the other (27.2.1.3 CreateResolvingFunctions). The
     // resolve fn also assimilates thenables/promises and rejects self-resolution.
-    let (resolve_closure, reject_closure) = make_resolving_functions(promise);
+    let (resolve_closure, reject_closure) = make_resolving_functions(get_promise());
+    let reject_h = scope.root_nanbox_f64(crate::value::js_nanbox_pointer(reject_closure as i64));
+    let executor = crate::value::js_nanbox_get_pointer(executor_h.get_nanbox_f64())
+        as *const crate::closure::ClosureHeader;
 
     // Call the executor with (resolve_closure, reject_closure) as proper
     // NaN-boxed POINTER_TAG closure values — so user code that *reflects* on
@@ -624,6 +633,8 @@ pub extern "C" fn js_promise_new_with_executor(
         if let Err(reason) =
             combinator_catch_js(|| js_closure_call2(executor, resolve_f64, reject_f64))
         {
+            let reject_closure = crate::value::js_nanbox_get_pointer(reject_h.get_nanbox_f64())
+                as *const crate::closure::ClosureHeader;
             crate::closure::js_closure_call1(reject_closure, reason);
         }
     } else {
@@ -631,7 +642,7 @@ pub extern "C" fn js_promise_new_with_executor(
         js_closure_call2(executor, resolve_f64, reject_f64);
     }
 
-    promise
+    get_promise()
 }
 
 /// A resolving function's shared `[[AlreadyResolved]]` record. Per ECMA-262
