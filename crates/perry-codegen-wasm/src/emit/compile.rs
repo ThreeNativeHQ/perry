@@ -1618,6 +1618,7 @@ impl WasmModuleEmitter {
             wasm_bytes,
             async_js,
             ffi_imports: ffi_import_names,
+            unsupported: self.unsupported.take().into_iter().collect(),
         }
     }
 }

@@ -46,6 +46,8 @@ pub(super) struct WasmModuleEmitter {
     pub(super) func_name_map: BTreeMap<String, u32>,
     /// FFI imports: (name, param_count, has_return) — registered as WASM imports under "ffi" namespace
     pub(super) ffi_imports: Vec<(String, usize, bool)>,
+    /// HIR expression kinds the emitter has no lowering for → count (PRD-582).
+    pub(super) unsupported: std::cell::RefCell<BTreeMap<String, usize>>,
     /// Class parent map: child_class_name → parent_class_name
     pub(super) class_parent_map: BTreeMap<String, String>,
     /// Enum member values: (enum_name, member_name) → numeric value or string
@@ -113,6 +115,7 @@ impl WasmModuleEmitter {
             class_static_map: BTreeMap::new(),
             func_name_map: BTreeMap::new(),
             ffi_imports: Vec::new(),
+            unsupported: Default::default(),
             class_parent_map: BTreeMap::new(),
             enum_values: BTreeMap::new(),
             nan_temp_global: 0, // set during compile()

@@ -72,6 +72,8 @@ pub struct WasmCompileOutput {
     pub async_js: String,
     /// FFI function names that must be provided as imports under the "ffi" namespace.
     pub ffi_imports: Vec<String>,
+    /// HIR expression kinds lowered to `undefined` because the emitter has no lowering, with counts.
+    pub unsupported: Vec<(String, usize)>,
 }
 
 /// Compile HIR modules to a WebAssembly binary.

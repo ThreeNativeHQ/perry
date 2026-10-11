@@ -322,6 +322,11 @@ pub(crate) fn collect_module_finish(
             ..Default::default()
         });
         transform_generators(&mut hir_module);
+    } else if target == Some("wasm") && std::env::var_os("PERRY_WASM_ASYNC_STEP").is_some() {
+        // PRD-582: async bodies become Wasm step closures instead of generated JS.
+        inline_finally_into_returns(&mut hir_module);
+        transform_async_to_generator(&mut hir_module);
+        transform_generators(&mut hir_module);
     }
 
     // Set optional-feature gates (regex/temporal/url/crypto/events/etc.) so

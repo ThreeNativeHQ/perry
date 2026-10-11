@@ -23,6 +23,7 @@ pub fn compile_modules_to_wasm_html(
 ) -> Result<String> {
     let output = emit::compile_to_wasm_with_async(modules);
     validate_wasm(&output.wasm_bytes)?;
+    check_unsupported(&output.unsupported)?;
     let wasm_b64 = BASE64.encode(&output.wasm_bytes);
 
     let runtime_js = if minify {
@@ -93,9 +94,25 @@ pub fn get_ffi_imports(modules: &[(String, Module)]) -> Vec<String> {
 
 /// Get the raw WASM binary (for non-HTML output)
 pub fn compile_modules_to_wasm(modules: &[(String, Module)]) -> Result<Vec<u8>> {
-    let bytes = emit::compile_to_wasm(modules);
-    validate_wasm(&bytes)?;
-    Ok(bytes)
+    let output = emit::compile_to_wasm_with_async(modules);
+    validate_wasm(&output.wasm_bytes)?;
+    check_unsupported(&output.unsupported)?;
+    Ok(output.wasm_bytes)
+}
+
+/// Expressions the emitter lowered to `undefined` change behaviour silently: report them by kind,
+/// and refuse the build under PERRY_WASM_STRICT=1.
+fn check_unsupported(unsupported: &[(String, usize)]) -> Result<()> {
+    if unsupported.is_empty() {
+        return Ok(());
+    }
+    let list: Vec<String> = unsupported.iter().map(|(kind, n)| format!("{kind} x{n}")).collect();
+    let message = format!("PERRY_WASM_UNSUPPORTED: {}", list.join(", "));
+    if std::env::var_os("PERRY_WASM_STRICT").is_some_and(|v| v == "1") {
+        anyhow::bail!(message);
+    }
+    eprintln!("Warning: {message}");
+    Ok(())
 }
 
 fn validate_wasm(bytes: &[u8]) -> Result<()> {

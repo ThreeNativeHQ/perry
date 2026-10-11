@@ -72,7 +72,10 @@ impl<'a> FuncEmitCtx<'a> {
         if self.try_emit_expr_net_fetch_crypto(func, expr) {
             return;
         }
-        // --- Catch-all: emit undefined ---
+        // --- Catch-all: emit undefined, and record the kind so the build can report or refuse it ---
+        let debug = format!("{expr:?}");
+        let kind = debug.split(|c: char| !c.is_alphanumeric() && c != '_').next().unwrap_or("?");
+        *self.emitter.unsupported.borrow_mut().entry(kind.to_string()).or_default() += 1;
         func.instruction(&Instruction::I64Const(TAG_UNDEFINED as i64));
     }
 }
