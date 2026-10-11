@@ -36,31 +36,6 @@ pub fn djb2_hash(bytes: &[u8]) -> u64 {
     hash
 }
 
-/// Hash of the running `perry` executable, computed once per process.
-///
-/// `CARGO_PKG_VERSION` only invalidates the cache on a version bump; during
-/// HIR/codegen pass development the version usually doesn't move between
-/// rebuilds, so identical-source modules served stale `.o` files compiled
-/// against the old pass output (issue #544 — ~45 min of phantom-bug
-/// debugging). Folding a hash of the perry binary itself into the key means
-/// any `cargo build -p perry-codegen` (or `perry-transform`, `perry-hir`,
-/// or any dep that gets baked into the perry executable) produces a new
-/// build id and the cache invalidates correctly.
-///
-/// Failure modes degrade silently: if `current_exe()` or the read fails,
-/// returns 0 and we fall back to the version-only behavior — at worst the
-/// user is back to the pre-fix status quo, never worse.
-fn perry_build_id() -> u64 {
-    static BUILD_ID: OnceLock<u64> = OnceLock::new();
-    *BUILD_ID.get_or_init(|| {
-        std::env::current_exe()
-            .ok()
-            .and_then(|p| fs::read(&p).ok())
-            .map(|bytes| djb2_hash(&bytes))
-            .unwrap_or(0)
-    })
-}
-
 /// Directory holding Perry's on-disk caches for a project. Precedence:
 /// `--cache-dir` → `PERRY_CACHE_DIR` → perry.toml `[perry] cacheDir` →
 /// package.json `perry.cacheDir` → default
@@ -272,11 +247,8 @@ fn compute_object_cache_key_with_env(
     // emit_ir_only=true, but include it so key-space is disjoint if the
     // caller ever forgets to check).
     h.field("v", perry_version);
-    // Build id of the running perry binary (issue #544). Hashed once per
-    // process; see `perry_build_id` for rationale. The version field above
-    // is not enough during HIR/codegen pass development because the version
-    // doesn't usually move between rebuilds.
-    h.field("build_id", &format!("{:016x}", perry_build_id()));
+    // Runtime/driver rebuilds require relinking, not regenerating module objects.
+    h.field("codegen_build_id", perry_codegen::CODEGEN_BUILD_ID);
     h.field("ir_only", if opts.emit_ir_only { "1" } else { "0" });
     // #5247: `--debug-symbols` flips per-call `js_set_call_location` emission,
     // which changes the emitted IR (and `.o` bytes). Without this in the key,

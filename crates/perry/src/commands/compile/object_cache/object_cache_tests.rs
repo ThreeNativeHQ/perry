@@ -90,8 +90,8 @@ fn key_changes_with_hir_hash() {
     //
     // Note: "same source bytes, different HIR" (e.g. a lowering-pass
     // behavior change between Perry versions that rewrites the same
-    // input into different HIR) is covered by the `build_id` field
-    // mixed in by `perry_build_id()`, NOT by this hash. So a HIR
+    // input into different HIR) is covered by the `codegen_build_id` field
+    // derived from the emitter and HIR sources, NOT by this hash. So a HIR
     // walk that adds new fields between releases doesn't need a
     // separate invalidation hook here.
     let opts = empty_opts();
@@ -176,23 +176,10 @@ fn key_changes_with_fp_contract_mode() {
 }
 
 #[test]
-fn key_includes_perry_build_id() {
-    // Issue #544: the cache key must mix in a hash of the running perry
-    // binary so HIR/codegen pass changes invalidate the cache even when
-    // the version string doesn't move. We can't easily synthesize two
-    // distinct binary hashes from inside a unit test, but we can check
-    // (a) that `perry_build_id()` returns a non-zero value when the
-    // test binary exists on disk (i.e. the helper actually ran), and
-    // (b) that perturbing the helper's output would change the key —
-    // verified indirectly by confirming the field is present in the
-    // serialized form via the field separator count.
-    let id = perry_build_id();
-    // The test binary is always readable, so the helper can't degrade
-    // to 0 here. If this ever fails, current_exe() / fs::read started
-    // misbehaving and we'd want to know.
-    assert_ne!(id, 0, "perry_build_id must hash the test executable");
-    // Stable across calls within a process (OnceLock).
-    assert_eq!(perry_build_id(), id);
+fn key_includes_codegen_build_id() {
+    let id = perry_codegen::CODEGEN_BUILD_ID;
+    assert_eq!(id.len(), 16);
+    assert_ne!(u64::from_str_radix(id, 16).unwrap(), 0);
 }
 
 #[test]
