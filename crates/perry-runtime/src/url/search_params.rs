@@ -22,6 +22,14 @@ pub(crate) const URL_SEARCH_PARAMS_FIELD_COUNT: u32 = 2;
 /// object that the inherited method surface actually operates on.
 pub(crate) const URL_SEARCH_PARAMS_BACKING_KEY: &[u8] = b"__perry_usp_backing__";
 
+static URL_SEARCH_PARAMS_SUBCLASS_USED: crate::registry_latch::RegistryLatch =
+    crate::registry_latch::RegistryLatch::new();
+
+#[cfg(test)]
+thread_local! {
+    static BACKING_PROBES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
 /// Resolve a URLSearchParams method receiver to the native params object it
 /// operates on.
 ///
@@ -62,6 +70,11 @@ pub(crate) fn resolve_search_params_receiver(params: *mut ObjectHeader) -> *mut 
 /// `r.get()`/`r.has()`/… lowered generically (the HIR method-lowering only fires
 /// for a statically `URLSearchParams`-typed receiver, not a subclass type).
 pub(crate) fn url_search_params_backing_of(object: f64) -> Option<*mut ObjectHeader> {
+    if URL_SEARCH_PARAMS_SUBCLASS_USED.is_idle() {
+        return None;
+    }
+    #[cfg(test)]
+    BACKING_PROBES.with(|count| count.set(count.get() + 1));
     let jv = crate::value::JSValue::from_bits(object.to_bits());
     if !jv.is_pointer() {
         return None;
@@ -145,6 +158,8 @@ pub extern "C" fn js_url_search_params_subclass_init(this: f64, init: f64) -> f6
     let key = key_handle.get_raw_const_ptr::<crate::StringHeader>();
     let backing_ptr = backing_handle.get_raw_mut_ptr::<ObjectHeader>();
     let backing_f64 = crate::value::js_nanbox_pointer(backing_ptr as i64);
+    // The sole runtime publisher of the subclass backing; arm before writing.
+    URL_SEARCH_PARAMS_SUBCLASS_USED.arm();
     crate::object::js_object_set_field_by_name(this_obj, key, backing_f64);
     undef
 }
@@ -1261,6 +1276,34 @@ pub(crate) fn url_search_params_method_value(obj: *const ObjectHeader, name: &st
 #[cfg(test)]
 mod backing_probe_gate_tests {
     use super::*;
+
+    #[test]
+    fn backing_probe_skips_until_subclass_init() {
+        const CHILD: &str = "PERRY_B15_URL_LATCH_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "url::search_params::backing_probe_gate_tests::backing_probe_skips_until_subclass_init"])
+                .env(CHILD, "1")
+                .stdin(std::process::Stdio::null())
+                .status().unwrap();
+            assert!(status.success());
+            return;
+        }
+        let scope = crate::gc::RuntimeHandleScope::new();
+        let obj = scope.root_raw_mut_ptr(crate::object::js_object_alloc(0, 0));
+        let receiver =
+            || crate::value::js_nanbox_pointer(obj.get_raw_mut_ptr::<ObjectHeader>() as i64);
+        assert!(URL_SEARCH_PARAMS_SUBCLASS_USED.is_idle());
+        assert!(url_search_params_backing_of(receiver()).is_none());
+        assert_eq!(BACKING_PROBES.with(|count| count.get()), 0);
+        let init = js_string_from_bytes(b"k=v".as_ptr(), 3);
+        js_url_search_params_subclass_init(receiver(), crate::value::js_nanbox_string(init as i64));
+        let backing = url_search_params_backing_of(receiver()).expect("subclass backing");
+        assert_eq!(js_url_search_params_size(backing), 1);
+        assert!(BACKING_PROBES.with(|count| count.get()) > 0);
+        // The armed path must retain #5964's non-ObjectHeader rejection.
+        assert!(url_search_params_backing_of(crate::date::js_date_new()).is_none());
+    }
 
     /// The backing probe must decide non-object receivers from the GC header
     /// alone. It sits on `js_get_iterator` and the generic method-dispatch

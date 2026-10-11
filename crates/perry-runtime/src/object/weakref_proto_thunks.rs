@@ -50,6 +50,11 @@ use crate::weakref::{
     CLASS_ID_WEAKMAP, CLASS_ID_WEAKREF, CLASS_ID_WEAKSET,
 };
 
+#[cfg(test)]
+thread_local! {
+    static WEAK_DISPATCH_PROBES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
 /// Dynamic-dispatch entry point for weak-wrapper method calls (issues
 /// #1757/#1758 for WeakMap/WeakSet, #7947 for WeakRef/FinalizationRegistry).
 /// `js_native_call_method` calls this for any heap object; it returns
@@ -74,6 +79,18 @@ pub unsafe fn try_weak_method_dispatch(
     args_ptr: *const f64,
     args_len: usize,
 ) -> Option<f64> {
+    if crate::weakref::WEAK_METHOD_DISPATCH_USED.is_idle() {
+        return None;
+    }
+    // Even after first use, unrelated method names cannot match a weak thunk.
+    if !matches!(
+        method_name,
+        "set" | "add" | "get" | "has" | "delete" | "deref" | "register" | "unregister"
+    ) {
+        return None;
+    }
+    #[cfg(test)]
+    WEAK_DISPATCH_PROBES.with(|count| count.set(count.get() + 1));
     let class_id = weak_wrapper_class_id(receiver)?;
     if !matches!(
         class_id,
@@ -299,6 +316,9 @@ pub(super) fn install_weakref_proto_methods(
     proto_obj: *mut ObjectHeader,
 ) -> bool {
     use super::global_this::install_proto_method as ipm;
+    if matches!(builtin_name, "WeakRef" | "FinalizationRegistry") {
+        crate::weakref::WEAK_METHOD_DISPATCH_USED.arm();
+    }
     match builtin_name {
         "WeakRef" => {
             ipm(
@@ -359,6 +379,78 @@ pub(crate) fn weakref_proto_method_value_for(receiver_cid: u32, method_name: &st
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn weak_dispatch_skips_until_first_use() {
+        const CHILD: &str = "PERRY_B15_WEAK_LATCH_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            for mode in ["new", "prototype", "parent"] {
+                let status = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "object::weakref_proto_thunks::tests::weak_dispatch_skips_until_first_use",
+                    ])
+                    .env(CHILD, mode)
+                    .stdin(std::process::Stdio::null())
+                    .status()
+                    .unwrap();
+                assert!(status.success(), "weak latch route {mode}");
+            }
+            return;
+        }
+        let scope = crate::gc::RuntimeHandleScope::new();
+        let obj = scope.root_raw_mut_ptr(crate::object::js_object_alloc(0, 0));
+        let receiver =
+            || crate::value::js_nanbox_pointer(obj.get_raw_mut_ptr::<ObjectHeader>() as i64);
+        assert!(crate::weakref::WEAK_METHOD_DISPATCH_USED.is_idle());
+        assert!(unsafe {
+            try_weak_method_dispatch(
+                obj.get_raw_mut_ptr(),
+                receiver(),
+                "deref",
+                std::ptr::null(),
+                0,
+            )
+        }
+        .is_none());
+        assert_eq!(WEAK_DISPATCH_PROBES.with(|count| count.get()), 0);
+        match std::env::var(CHILD).unwrap().as_str() {
+            "prototype" => {
+                let proto = crate::object::js_object_alloc(0, 0);
+                assert!(install_weakref_proto_methods("WeakRef", proto));
+                assert!(crate::weakref::WEAK_METHOD_DISPATCH_USED.is_armed());
+            }
+            "parent" => {
+                crate::object::js_register_class_parent(0xB155_0001, 0xFFFF_002C);
+                assert!(crate::weakref::WEAK_METHOD_DISPATCH_USED.is_armed());
+            }
+            _ => {}
+        }
+        let wr = crate::weakref::js_weakref_new(receiver());
+        let result = unsafe {
+            try_weak_method_dispatch(
+                wr,
+                crate::value::js_nanbox_pointer(wr as i64),
+                "deref",
+                std::ptr::null(),
+                0,
+            )
+        };
+        assert_eq!(result.unwrap().to_bits(), receiver().to_bits());
+        assert!(WEAK_DISPATCH_PROBES.with(|count| count.get()) > 0);
+        let before = WEAK_DISPATCH_PROBES.with(|count| count.get());
+        assert!(unsafe {
+            try_weak_method_dispatch(
+                obj.get_raw_mut_ptr(),
+                receiver(),
+                "update",
+                std::ptr::null(),
+                0,
+            )
+        }
+        .is_none());
+        assert_eq!(WEAK_DISPATCH_PROBES.with(|count| count.get()), before);
+    }
     use crate::value::JSValue;
 
     /// Sentinel a foreign receiver's OWN method returns. Distinct from

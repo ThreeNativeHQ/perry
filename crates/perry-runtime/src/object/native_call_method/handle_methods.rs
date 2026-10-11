@@ -1,6 +1,11 @@
 use super::typed_array::*;
 use super::*;
 
+#[cfg(test)]
+thread_local! {
+    static METHOD_KEY_ALLOCS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
 /// Wall 10 — resolve and invoke a method that a framework attached to a native
 /// registry handle via `Object.setPrototypeOf(handle, proto)` (Express's
 /// augmented `res.send` / `req.accepts` / …). The link was recorded in the
@@ -67,6 +72,21 @@ pub(super) unsafe fn dispatch_handle(
     let refreshed_args = || crate::gc::RuntimeHandleScope::refreshed_nanbox_f64_slice(arg_handles);
     let _ = (root_scope, object_handle, &refreshed_args, raw_bits, jsval);
     let _ = (method_name_ptr, method_name_len);
+    // Reuse the immutable key across helper/prototype probes; reload from its
+    // root each time because an accessor can move it during the preceding probe.
+    let mut method_key_handle = None;
+    let mut get_method_key = || {
+        method_key_handle
+            .get_or_insert_with(|| {
+                #[cfg(test)]
+                METHOD_KEY_ALLOCS.with(|count| count.set(count.get() + 1));
+                root_scope.root_string_ptr(crate::string::js_string_from_bytes(
+                    method_name.as_ptr(),
+                    method_name.len() as u32,
+                ))
+            })
+            .get_raw_const_ptr::<crate::StringHeader>()
+    };
     // Check if this is a handle-based object (small integer, not a real heap pointer)
     // Handles are used by Fastify, ioredis, and other native modules that store
     // objects in a registry and use integer IDs to reference them.
@@ -921,10 +941,7 @@ pub(super) unsafe fn dispatch_handle(
             // own-field scan so the cheap has-own check below stays in sync.
             if crate::iterator_helpers::is_iterator_helper_method(method_name) {
                 let has_own = {
-                    let mk = crate::string::js_string_from_bytes(
-                        method_name.as_ptr(),
-                        method_name.len() as u32,
-                    );
+                    let mk = get_method_key();
                     let fv = js_object_get_field_by_name(obj as *const _, mk);
                     let fp =
                         crate::value::js_nanbox_get_pointer(f64::from_bits(fv.bits())) as usize;
@@ -1125,10 +1142,7 @@ pub(super) unsafe fn dispatch_handle(
                                 class_prototype_object(cur_cid)
                             };
                             if !proto_obj.is_null() {
-                                let method_key = crate::string::js_string_from_bytes(
-                                    method_name.as_ptr(),
-                                    method_name.len() as u32,
-                                );
+                                let method_key = get_method_key();
                                 // An inherited method that resolves to an ACCESSOR
                                 // on the prototype must observe the instance as
                                 // `this` (spec `[[Get]](P, Receiver)`), not the
@@ -1237,10 +1251,7 @@ pub(super) unsafe fn dispatch_handle(
                 // prototype chain directly (reuses the same helper as
                 // `js_object_get_field_by_name`), then invoke it with
                 // `this` bound to the receiver.
-                let method_key = crate::string::js_string_from_bytes(
-                    method_name.as_ptr(),
-                    method_name.len() as u32,
-                );
+                let method_key = get_method_key();
                 // `_with_receiver` binds an inherited ACCESSOR getter's `this`
                 // to the instance (not the prototype it lives on), matching the
                 // ProtoClosure walk above and spec `[[Get]](P, Receiver)`. A
@@ -1317,4 +1328,32 @@ pub(super) unsafe fn dispatch_handle(
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn method_key_is_reused_across_helper_and_prototype_probes() {
+        let scope = crate::gc::RuntimeHandleScope::new();
+        let obj = crate::object::js_object_alloc(0xB155_0000, 0);
+        let obj = scope.root_nanbox_f64(crate::value::js_nanbox_pointer(obj as i64));
+        let before = METHOD_KEY_ALLOCS.with(|count| count.get());
+        let result = unsafe {
+            dispatch_handle(
+                &scope,
+                &obj,
+                &[],
+                obj.get_nanbox_f64(),
+                "map",
+                b"map".as_ptr().cast(),
+                3,
+                std::ptr::null(),
+                0,
+            )
+        };
+        assert!(result.is_none());
+        assert_eq!(METHOD_KEY_ALLOCS.with(|count| count.get()), before + 1);
+    }
 }

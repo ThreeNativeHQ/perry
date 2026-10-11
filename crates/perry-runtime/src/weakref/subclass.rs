@@ -3,6 +3,7 @@
 /// builtin algorithm. `kind`: 0 = WeakMap, 1 = WeakSet.
 #[no_mangle]
 pub extern "C" fn js_weak_collection_subclass_init(this: f64, kind: i32, iterable: f64) -> f64 {
+    WEAK_METHOD_DISPATCH_USED.arm();
     let scope = crate::gc::RuntimeHandleScope::new();
     let this = scope.root_nanbox_f64(this);
     let iterable = scope.root_nanbox_f64(iterable);

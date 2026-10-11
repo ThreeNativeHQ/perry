@@ -36,6 +36,8 @@ const WEAKREF_SHAPE_ID: u32 = 0x7FFF_FE10;
 const FINREG_SHAPE_ID: u32 = 0x7FFF_FE11;
 const FINREG_RECORD_SHAPE_ID: u32 = 0x7FFF_FE14;
 pub const CLASS_ID_WEAKREF: u32 = 0xFFFF_0029;
+pub(crate) static WEAK_METHOD_DISPATCH_USED: crate::registry_latch::RegistryLatch =
+    crate::registry_latch::RegistryLatch::new();
 pub const CLASS_ID_FINALIZATION_REGISTRY: u32 = 0xFFFF_002A;
 pub const CLASS_ID_FINALIZATION_RECORD: u32 = 0xFFFF_002B;
 /// A single WeakMap/WeakSet entry. Field 0 holds the key — a *weak* slot,
@@ -407,6 +409,7 @@ pub(crate) unsafe fn is_weak_target_trace_slot(
 /// field for relocation, but GC mark/remembered-set scans skip that field.
 #[no_mangle]
 pub extern "C" fn js_weakref_new(target: f64) -> *mut ObjectHeader {
+    WEAK_METHOD_DISPATCH_USED.arm();
     if !is_valid_weak_target(target) {
         weakref_type_error("WeakRef: invalid target");
     }
@@ -461,6 +464,7 @@ pub extern "C" fn js_weakref_deref(weakref: f64) -> f64 {
 /// callback, the second field stores finalization record objects.
 #[no_mangle]
 pub extern "C" fn js_finreg_new(callback: f64) -> *mut ObjectHeader {
+    WEAK_METHOD_DISPATCH_USED.arm();
     if !is_callable_value(callback) {
         weakref_type_error("FinalizationRegistry: cleanup must be callable");
     }
@@ -1439,6 +1443,7 @@ unsafe fn find_weak_entry(entries: *mut ArrayHeader, key: u64) -> *mut ObjectHea
 
 #[no_mangle]
 pub extern "C" fn js_weakmap_new() -> *mut ObjectHeader {
+    WEAK_METHOD_DISPATCH_USED.arm();
     // #1766: sentinel-named slot so `(wm as any).entries` returns
     // `undefined` like Node, instead of leaking the [k, v]-pair array.
     let packed = b"__perry_wk_entries\0";
@@ -1749,6 +1754,7 @@ pub extern "C" fn js_weakmap_delete(map: f64, key: f64) -> f64 {
 
 #[no_mangle]
 pub extern "C" fn js_weakset_new() -> *mut ObjectHeader {
+    WEAK_METHOD_DISPATCH_USED.arm();
     // #1766: shares the sentinel name with js_weakmap_new so the same
     // `entries_array` helper reaches the [k,v]-pair storage.
     let packed = b"__perry_wk_entries\0";

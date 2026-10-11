@@ -111,6 +111,9 @@ pub(super) fn install_collection_proto_methods(
     proto_obj: *mut ObjectHeader,
 ) -> bool {
     use super::global_this::install_proto_method as ipm;
+    if matches!(builtin_name, "WeakMap" | "WeakSet") {
+        crate::weakref::WEAK_METHOD_DISPATCH_USED.arm();
+    }
     match builtin_name {
         "Map" => {
             // #4099: install the `size` *accessor* BEFORE the data methods.

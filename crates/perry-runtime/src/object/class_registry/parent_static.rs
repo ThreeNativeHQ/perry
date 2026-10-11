@@ -5,6 +5,10 @@ use std::sync::atomic::Ordering;
 
 /// Register a class with its parent class ID in the global registry
 pub(crate) fn register_class(class_id: u32, parent_class_id: u32) {
+    // Include reserved WeakMap/WeakSet constructor ids used by subclasses.
+    if matches!(parent_class_id, 0xFFFF_0027..=0xFFFF_002D) {
+        crate::weakref::WEAK_METHOD_DISPATCH_USED.arm();
+    }
     // Parent linking changes what a class chain can intercept — flush cached
     // store plans (`object::prop_plan`).
     crate::object::prop_plan::prop_plan_epoch_bump();
