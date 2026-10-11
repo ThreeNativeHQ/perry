@@ -217,6 +217,27 @@ static BUFFER_LIKE_EVER_REGISTERED: RegistryLatch = RegistryLatch::new();
 /// [`RegistryAddrWindow`] for the ordering rule that makes it so.
 static BUFFER_LIKE_ADDR_WINDOW: RegistryAddrWindow = RegistryAddrWindow::new();
 
+// `register_buffer` also accepts foreign pointers and GC objects with other
+// types. Admit exceptions before publishing; never assume the ABI brands them.
+static NON_BUFFER_REGISTRATION_WINDOW: RegistryAddrWindow = RegistryAddrWindow::new();
+
+#[inline]
+fn is_non_buffer_arena_addr(addr: usize) -> bool {
+    let Some((_, base, starts)) = crate::arena::classify_heap_space_in_range(addr) else {
+        return false;
+    };
+    let Some(header_addr) = addr.checked_sub(crate::gc::GC_HEADER_SIZE) else {
+        return false;
+    };
+    if header_addr < base || header_addr % std::mem::align_of::<crate::gc::GcHeader>() != 0 {
+        return false;
+    }
+    // Every GC buffer allocation records its boundary in the arena bitmap.
+    // A missing bit rejects without reading potentially uninitialized payload
+    // bytes. Map boundaries and stale bits only cause harmless slow probes.
+    !crate::arena::arena_header_is_object_start(header_addr, base, starts)
+}
+
 #[cfg(test)]
 thread_local! {
 /// Test-only count of `is_registered_buffer` calls that got past the address
@@ -404,6 +425,9 @@ pub fn register_buffer(ptr: *const BufferHeader) {
     // this buffer is in the registry while `is_registered_buffer` still takes
     // the idle fast path and denies it. See `crate::registry_latch`.
     let addr = ptr as usize;
+    if is_non_buffer_arena_addr(addr) {
+        NON_BUFFER_REGISTRATION_WINDOW.admit(addr);
+    }
     BUFFER_LIKE_ADDR_WINDOW.admit(addr);
     BUFFER_LIKE_EVER_REGISTERED.arm();
     BUFFER_ADDR_RANGE.with(|r| {
@@ -464,6 +488,14 @@ pub fn is_registered_buffer(addr: usize) -> bool {
                  `note_buffer_like_registered`) first."
             );
         }
+        return false;
+    }
+    if !NON_BUFFER_REGISTRATION_WINDOW.may_contain(addr) && is_non_buffer_arena_addr(addr) {
+        #[cfg(debug_assertions)]
+        assert!(
+            !is_registered_buffer_slow(addr),
+            "arena buffer boundary rejected {addr:#x}, but it IS a registered buffer"
+        );
         return false;
     }
     #[cfg(test)]
@@ -530,6 +562,7 @@ pub fn mark_as_uint8array(addr: usize) {
 
 #[no_mangle]
 pub extern "C" fn js_buffer_register_external(addr: usize) {
+    NON_BUFFER_REGISTRATION_WINDOW.admit(addr);
     register_buffer(addr as *const BufferHeader);
     // Latch BEFORE the insert: a concurrent `is_registered_buffer` that
     // observed the latch after the insert-but-before-the-store window would
@@ -626,6 +659,7 @@ pub extern "C" fn js_buffer_mark_as_crypto_key_external(
     usages: u32,
     bit_length: u32,
 ) {
+    NON_BUFFER_REGISTRATION_WINDOW.admit(addr);
     register_buffer(addr as *const BufferHeader);
     mark_as_uint8array(addr);
     mark_as_crypto_key_with_flags(addr, algo, hash, kind, extractable != 0, usages, bit_length);

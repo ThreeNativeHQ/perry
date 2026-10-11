@@ -190,6 +190,79 @@ pub use iter::{
 mod tests {
     use super::*;
 
+    #[test]
+    fn gc_non_buffers_skip_buffer_registry_probes() {
+        const CHILD: &str = "PERRY_B14_BUFFER_PROBE_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "buffer::tests::gc_non_buffers_skip_buffer_registry_probes",
+                ])
+                .env(CHILD, "1")
+                .stdin(std::process::Stdio::null())
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        }
+        let scope = crate::gc::RuntimeHandleScope::new();
+        let first = buffer_alloc(32) as usize;
+        let object = scope.root_raw_mut_ptr(crate::object::js_object_alloc(0, 0));
+        let array = scope.root_raw_mut_ptr(crate::array::js_array_alloc(0));
+        let last = buffer_alloc(32) as usize;
+        let unused = crate::arena::arena_alloc(16, 8) as usize + crate::gc::GC_HEADER_SIZE;
+        let object = object.get_raw_mut_ptr::<crate::object::ObjectHeader>() as usize;
+        let array = array.get_raw_mut_ptr::<crate::array::ArrayHeader>() as usize;
+        // Ensure the existing window cannot explain either rejection, even
+        // when the young and old arenas occupy different blocks.
+        for addr in [object, array] {
+            header::note_buffer_like_registered(addr);
+            assert!(crate::arena::classify_heap_space_in_range(addr).is_some());
+        }
+        let before = header::test_buffer_registry_probe_count();
+        assert!(!is_registered_buffer(object));
+        assert!(!is_registered_buffer(array));
+        // Raw arena storage is mapped but has no initialized GC header.
+        // The arbitrary-address probe must decide from metadata alone.
+        header::note_buffer_like_registered(unused);
+        assert!(!is_registered_buffer(unused));
+        assert!(!is_registered_buffer(object + crate::gc::GC_HEADER_SIZE));
+        assert_eq!(header::test_buffer_registry_probe_count(), before);
+        assert!(is_registered_buffer(first));
+        assert!(is_registered_buffer(last));
+
+        header::register_buffer(object as *const BufferHeader);
+        assert!(is_registered_buffer(object));
+        finalize_collected_dead_buffer(object);
+
+        // External buffers may have no GC header at all.
+        let external = Box::new(BufferHeader {
+            length: 0,
+            capacity: 0,
+        });
+        let addr = &*external as *const BufferHeader as usize;
+        header::js_buffer_register_external(addr);
+        assert!(is_registered_buffer(addr));
+        assert!(std::thread::spawn(move || is_registered_buffer(addr))
+            .join()
+            .unwrap());
+        finalize_collected_dead_buffer(addr);
+        let sab = crate::shared_sab::alloc_shared_sab(8) as usize;
+        assert!(is_registered_buffer(sab));
+        assert!(std::thread::spawn(move || is_registered_buffer(sab))
+            .join()
+            .unwrap());
+
+        // The registration ABI permits an arena object with a non-buffer type.
+        header::js_buffer_register_external(object);
+        assert!(is_registered_buffer(object));
+        assert!(std::thread::spawn(move || is_registered_buffer(object))
+            .join()
+            .unwrap());
+        finalize_collected_dead_buffer(object);
+    }
+
     /// The GC buffer sweep must drop the CryptoKey/secret-key side tables
     /// along with the buffer identity ones. They are plain `addr -> metadata`
     /// maps that never rooted the `BufferHeader`, so leaving them behind both
