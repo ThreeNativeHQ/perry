@@ -2037,6 +2037,7 @@ const __memDispatch = {
     if (!classStaticTable[cls]) classStaticTable[cls] = {};
     classStaticTable[cls][String(name)] = value;
   },
+  class_ref: (classId) => classStaticTable[String(classId)] ??= {},
   class_get_static: (classId, name) => {
     const cls = String(classId); const statics = classStaticTable[cls];
     if (!statics) return undefined;
@@ -2139,6 +2140,8 @@ const __memDispatch = {
   iter_result_get_done: () => __iterDone,
   current_step_closure: () => __currentStep,
   global_this: () => globalThis,
+  for_of_next: (it) => __classDispatch(it, 'next', []),
+  get_iterator: (v) => v != null && typeof v[Symbol.iterator] === 'function' ? v[Symbol.iterator]() : v,
   async_first_call: (step) => __runStep(step, undefined, false),
   async_step_chain: (value, step) => Promise.resolve(value).then(
     (v) => __runStep(step, v, false),
@@ -2654,7 +2657,8 @@ function callWasmClosure(closureVal, ...extraArgs) {
     // Extra args need to be BigInt (i64) for WASM functions. Captures are already BigInt.
     const wasmArgs = extraArgs.map(v => __jsValueToBits(v));
     if (fn) {
-      const result = fn(...(closure.captures || []), ...wasmArgs);
+      const captures = closure.captures || [];
+      const result = fn(...captures, ...__padBigintArgs(fn, captures.length, wasmArgs));
       return (typeof result === 'bigint') ? __bitsToJsValue(result) : undefined;
     }
   }

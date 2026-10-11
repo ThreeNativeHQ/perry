@@ -411,8 +411,15 @@ impl<'a> FuncEmitCtx<'a> {
                 self.emit_store_const(func, 1, f64::from_bits(method_bits));
                 self.emit_memcall(func, "class_call_method", 3);
             }
-            Expr::ClassRef(_) => {
-                func.instruction(&Instruction::I64Const(TAG_UNDEFINED as i64));
+            Expr::ClassRef(class_name) => {
+                // The class value is its statics object, so `Cls.#x` and `Cls.x` read the
+                // storage class_set_static writes (PRD-582).
+                // ponytail: not callable or constructible as a value; add when a class is
+                // passed around and invoked.
+                let class_id = self.emitter.string_map.get(class_name.as_str()).copied().unwrap_or(0);
+                self.emit_frame_begin(func, 1);
+                self.emit_store_const(func, 0, f64::from_bits((STRING_TAG << 48) | class_id as u64));
+                self.emit_memcall(func, "class_ref", 1);
             }
             Expr::StaticFieldGet {
                 class_name,

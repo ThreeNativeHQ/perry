@@ -143,12 +143,27 @@ pub(super) fn collect_locals(
 /// branch above.
 pub(super) fn resolve_module_idx_by_source(
     modules: &[(String, perry_hir::ir::Module)],
+    importer: usize,
     source: &str,
 ) -> Option<usize> {
+    // A relative specifier names one file next to its importer. The suffix match below picks
+    // the longest module ending in `/three`, which in Midway's graph was the playtest
+    // package's `three/index.ts` instead of the facade's `three.ts` (PRD-582).
+    if source.starts_with("./") || source.starts_with("../") {
+        if let Some(i) = resolve_relative(modules, importer, source) {
+            return Some(i);
+        }
+    }
     let src = source
         .trim_start_matches("./")
         .trim_start_matches("../")
         .replace('\\', "/");
+    // TS ESM spells a `.ts` source as `./three.js`: match the stem (PRD-582).
+    let src = [".js", ".mjs", ".cjs", ".jsx"]
+        .iter()
+        .find_map(|ext| src.strip_suffix(ext))
+        .map(str::to_string)
+        .unwrap_or(src);
     // A directory specifier ("./core") resolves to its index module.
     let src_index = format!("{}/index", src);
     let mut best: Option<(usize, usize)> = None;
@@ -173,6 +188,37 @@ pub(super) fn resolve_module_idx_by_source(
         }
     }
     best.map(|(i, _)| i)
+}
+
+/// Resolve `./x.js` / `../y` against the importer's directory to a module stem (or its index).
+fn resolve_relative(
+    modules: &[(String, perry_hir::ir::Module)],
+    importer: usize,
+    source: &str,
+) -> Option<usize> {
+    let importer_name = modules[importer].1.name.replace('\\', "/");
+    let mut parts: Vec<&str> = importer_name.split('/').collect();
+    parts.pop();
+    for segment in source.split('/') {
+        match segment {
+            "." | "" => {}
+            ".." => {
+                parts.pop()?;
+            }
+            other => parts.push(other),
+        }
+    }
+    let path = parts.join("/");
+    let path = [".js", ".mjs", ".cjs", ".jsx"]
+        .iter()
+        .find_map(|ext| path.strip_suffix(ext))
+        .unwrap_or(&path);
+    let index = format!("{path}/index");
+    modules.iter().position(|(_, m)| {
+        let name = m.name.replace('\\', "/");
+        let stem = name.rsplit_once('.').map_or(name.as_str(), |(s, _)| s);
+        name == path || stem == path || stem == index
+    })
 }
 
 /// Is `name` part of module `m`'s own PUBLIC surface — i.e. does it appear
@@ -220,7 +266,7 @@ pub(super) fn collect_exported_names(
                 out.insert(exported.clone());
             }
             perry_hir::ir::Export::ExportAll { source } => {
-                if let Some(si) = resolve_module_idx_by_source(modules, source) {
+                if let Some(si) = resolve_module_idx_by_source(modules, mod_idx, source) {
                     if si != mod_idx {
                         collect_exported_names(modules, si, depth - 1, out);
                     }
@@ -304,7 +350,7 @@ pub(super) fn resolve_export_to_let(
                 imported,
                 exported,
             } if exported == name => {
-                if let Some(si) = resolve_module_idx_by_source(modules, source) {
+                if let Some(si) = resolve_module_idx_by_source(modules, mod_idx, source) {
                     if let Some(g) = resolve_export_to_let(
                         modules,
                         src_let_names,
@@ -323,7 +369,7 @@ pub(super) fn resolve_export_to_let(
     // Star re-exports: the name isn't listed, try every `export * from`.
     for export in &m.exports {
         if let perry_hir::ir::Export::ExportAll { source } = export {
-            if let Some(si) = resolve_module_idx_by_source(modules, source) {
+            if let Some(si) = resolve_module_idx_by_source(modules, mod_idx, source) {
                 if si != mod_idx {
                     if let Some(g) = resolve_export_to_let(
                         modules,
@@ -426,7 +472,7 @@ pub(super) fn resolve_export_to_func(
                 imported,
                 exported,
             } if exported == name => {
-                if let Some(si) = resolve_module_idx_by_source(modules, source) {
+                if let Some(si) = resolve_module_idx_by_source(modules, mod_idx, source) {
                     if let Some(idx) = resolve_export_to_func(
                         modules,
                         module_func_maps,
@@ -444,7 +490,7 @@ pub(super) fn resolve_export_to_func(
     }
     for export in &m.exports {
         if let perry_hir::ir::Export::ExportAll { source } = export {
-            if let Some(si) = resolve_module_idx_by_source(modules, source) {
+            if let Some(si) = resolve_module_idx_by_source(modules, mod_idx, source) {
                 if si != mod_idx {
                     if let Some(idx) = resolve_export_to_func(
                         modules,

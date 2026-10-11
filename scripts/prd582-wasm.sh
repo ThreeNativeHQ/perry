@@ -14,7 +14,7 @@ perry=${PERRY:-target/release/perry}
 fail=0
 for src in "$@"; do
     name=$(basename "$src" .ts)
-    "$esbuild" "$src" --format=cjs --platform=node --outfile="$out/$name.cjs" </dev/null >/dev/null 2>&1
+    "$esbuild" "$src" --bundle --format=cjs --platform=node --outfile="$out/$name.cjs" </dev/null >/dev/null 2>&1
     want=$(node "$out/$name.cjs" </dev/null)
     if ! timeout 300 "$perry" compile "$src" --target wasm -o "$out/$name.html" \
         </dev/null >"$out/$name.compile.log" 2>&1; then

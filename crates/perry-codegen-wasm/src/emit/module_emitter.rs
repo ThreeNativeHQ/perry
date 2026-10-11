@@ -142,6 +142,19 @@ impl WasmModuleEmitter {
         if let Some(&id) = self.string_map.get(s) {
             return id;
         }
+        // HIR keys private accesses as `#<perry:private-{value|member}:{class}:#name>`, while the
+        // class declares `#name`: both spellings share one id (PRD-582).
+        // ponytail: a parent and child that both declare `#name` share one slot; key by class
+        // when a program needs both.
+        if let Some(name) = s
+            .strip_prefix("#<perry:private-")
+            .and_then(|rest| rest.strip_suffix('>'))
+            .and_then(|rest| rest.rsplit(':').next())
+        {
+            let id = self.intern_string(name);
+            self.string_map.insert(s.to_string(), id);
+            return id;
+        }
         let id = self.string_table.len() as u32;
         let offset = self.string_data.len() as u32;
         let bytes = s.as_bytes();

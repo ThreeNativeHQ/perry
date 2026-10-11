@@ -104,6 +104,9 @@ impl<'a> FuncEmitCtx<'a> {
                 func.instruction(&Instruction::I64Const(TAG_FALSE as i64));
                 func.instruction(&Instruction::End);
             }
+            Expr::NumberIsFinite(val) => self.emit_number_predicate(func, val, 0),
+            Expr::NumberIsInteger(val) => self.emit_number_predicate(func, val, 1),
+            Expr::NumberIsSafeInteger(val) => self.emit_number_predicate(func, val, 2),
             Expr::BigIntCoerce(_) => {
                 func.instruction(&Instruction::I64Const(TAG_UNDEFINED as i64));
             }
@@ -111,5 +114,68 @@ impl<'a> FuncEmitCtx<'a> {
             _ => return false,
         }
         true
+    }
+
+    /// Number.isFinite (0), isInteger (1) and isSafeInteger (2) in Wasm, without coercion:
+    /// an int32-tagged value passes all three, any other tag fails, and an f64 is tested.
+    fn emit_number_predicate(&mut self, func: &mut Function, val: &Expr, level: u8) {
+        let t = self.temp_local;
+        let tag = |func: &mut Function| {
+            func.instruction(&Instruction::LocalGet(t));
+            func.instruction(&Instruction::I64Const(48));
+            func.instruction(&Instruction::I64ShrU);
+        };
+        let num = |func: &mut Function| {
+            func.instruction(&Instruction::LocalGet(t));
+            func.instruction(&Instruction::F64ReinterpretI64);
+        };
+        let bool_result = |func: &mut Function| {
+            func.instruction(&Instruction::If(wasm_encoder::BlockType::Result(ValType::I64)));
+            func.instruction(&Instruction::I64Const(TAG_TRUE as i64));
+            func.instruction(&Instruction::Else);
+            func.instruction(&Instruction::I64Const(TAG_FALSE as i64));
+            func.instruction(&Instruction::End);
+        };
+        self.emit_expr(func, val);
+        func.instruction(&Instruction::LocalSet(t));
+        tag(func);
+        func.instruction(&Instruction::I64Const(0x7FFE)); // INT32 tag
+        func.instruction(&Instruction::I64Eq);
+        func.instruction(&Instruction::If(wasm_encoder::BlockType::Result(ValType::I64)));
+        func.instruction(&Instruction::I64Const(TAG_TRUE as i64));
+        func.instruction(&Instruction::Else);
+        tag(func);
+        func.instruction(&Instruction::I64Const(0x7FFC)); // 0x7FFC..=0x7FFF are non-number tags
+        func.instruction(&Instruction::I64GeU);
+        tag(func);
+        func.instruction(&Instruction::I64Const(0x7FFF));
+        func.instruction(&Instruction::I64LeU);
+        func.instruction(&Instruction::I32And);
+        func.instruction(&Instruction::If(wasm_encoder::BlockType::Result(ValType::I64)));
+        func.instruction(&Instruction::I64Const(TAG_FALSE as i64));
+        func.instruction(&Instruction::Else);
+        // finite: x - x == 0 (NaN and ±Infinity give NaN)
+        num(func);
+        num(func);
+        func.instruction(&Instruction::F64Sub);
+        func.instruction(&Instruction::F64Const(0.0.into()));
+        func.instruction(&Instruction::F64Eq);
+        if level >= 1 {
+            num(func);
+            func.instruction(&Instruction::F64Trunc);
+            num(func);
+            func.instruction(&Instruction::F64Eq);
+            func.instruction(&Instruction::I32And);
+        }
+        if level >= 2 {
+            num(func);
+            func.instruction(&Instruction::F64Abs);
+            func.instruction(&Instruction::F64Const(9007199254740991.0.into()));
+            func.instruction(&Instruction::F64Le);
+            func.instruction(&Instruction::I32And);
+        }
+        bool_result(func);
+        func.instruction(&Instruction::End);
+        func.instruction(&Instruction::End);
     }
 }

@@ -204,7 +204,23 @@ impl<'a> FuncEmitCtx<'a> {
                             for _ in args {
                                 func.instruction(&Instruction::Drop);
                             }
-                            func.instruction(&Instruction::I64Const(TAG_UNDEFINED as i64));
+                            if name == "js_for_of_next" && args.len() == 1 {
+                                // The sync for-of advance: `iter.next()` through method dispatch.
+                                self.emit_frame_begin(func, 1);
+                                self.emit_store_arg(func, 0, &args[0]);
+                                self.emit_memcall(func, "for_of_next", 1);
+                            } else if self
+                                .emitter
+                                .imported_var_globals
+                                .contains_key(&(self.emitter.current_mod_idx, name.clone()))
+                            {
+                                // An imported `const` function (three/tsl's `vec3`): call the value.
+                                self.emit_dynamic_call(func, callee, args);
+                            } else {
+                                *self.emitter.unsupported.borrow_mut()
+                                    .entry(format!("UnresolvedExtern({name})")).or_default() += 1;
+                                func.instruction(&Instruction::I64Const(TAG_UNDEFINED as i64));
+                            }
                         }
                     }
                     _ => {
@@ -215,29 +231,7 @@ impl<'a> FuncEmitCtx<'a> {
                         for _ in args {
                             func.instruction(&Instruction::Drop);
                         }
-                        // Now emit: callee, args... via mem_call for Firefox NaN safety
-                        self.emit_frame_begin(func, (args.len() + 1) as u32);
-                        self.emit_store_arg(func, 0, callee);
-                        for (i, arg) in args.iter().enumerate() {
-                            self.emit_store_arg(func, (i + 1) as u32, arg);
-                        }
-                        match args.len() {
-                            0 => {
-                                self.emit_memcall(func, "closure_call_0", 1);
-                            }
-                            1 => {
-                                self.emit_memcall(func, "closure_call_1", 2);
-                            }
-                            2 => {
-                                self.emit_memcall(func, "closure_call_2", 3);
-                            }
-                            3 => {
-                                self.emit_memcall(func, "closure_call_3", 4);
-                            }
-                            _ => {
-                                func.instruction(&Instruction::I64Const(TAG_UNDEFINED as i64));
-                            }
-                        }
+                        self.emit_dynamic_call(func, callee, args);
                     }
                 }
             }
@@ -247,8 +241,25 @@ impl<'a> FuncEmitCtx<'a> {
         true
     }
 
-    /// The async-step state machine (`transform_async_to_generator` + `transform_generators`):
-    /// the body runs in Wasm step closures; the runtime only chains promises (PRD-582).
+    /// Call a closure value through the mem_call bridge (Firefox NaN safety); four or more
+    /// arguments travel as one array (closure_call_spread).
+    pub(super) fn emit_dynamic_call(&mut self, func: &mut Function, callee: &Expr, args: &[Expr]) {
+        if args.len() > 3 {
+            self.emit_frame_begin(func, 2);
+            self.emit_store_arg(func, 0, callee);
+            self.emit_store_arg(func, 1, &Expr::Array(args.to_vec()));
+            self.emit_memcall(func, "closure_call_spread", 2);
+            return;
+        }
+        self.emit_frame_begin(func, (args.len() + 1) as u32);
+        self.emit_store_arg(func, 0, callee);
+        for (i, arg) in args.iter().enumerate() {
+            self.emit_store_arg(func, (i + 1) as u32, arg);
+        }
+        let name = ["closure_call_0", "closure_call_1", "closure_call_2", "closure_call_3"][args.len()];
+        self.emit_memcall(func, name, args.len() as u32 + 1);
+    }
+
     /// console.log/warn/error: one argument goes straight through; any other count prints one
     /// space-joined line from an args array, as the host console does (PRD-582).
     pub(super) fn emit_console(&mut self, func: &mut Function, level: &str, args: &[Expr]) {
@@ -262,8 +273,24 @@ impl<'a> FuncEmitCtx<'a> {
         }
     }
 
+    /// The async-step state machine (`transform_async_to_generator` + `transform_generators`):
+    /// the body runs in Wasm step closures; the runtime only chains promises (PRD-582).
     pub(super) fn try_emit_expr_async_step(&mut self, func: &mut Function, expr: &Expr) -> bool {
         match expr {
+            // A private access on a legal receiver evaluates to the receiver unchanged.
+            // ponytail: no brand check, so an illegal receiver reads a field instead of throwing;
+            // add the check when a program relies on the TypeError.
+            Expr::PrivateGuard { object, .. } => self.emit_expr(func, object),
+            Expr::LinkGeneratorPrototype { obj, .. } => self.emit_expr(func, obj),
+            // The emitter never patches Array.prototype[Symbol.iterator].
+            Expr::ArrayIterationPatched => {
+                func.instruction(&Instruction::I64Const(TAG_FALSE as i64));
+            }
+            Expr::GetIterator(value) => {
+                self.emit_frame_begin(func, 1);
+                self.emit_store_arg(func, 0, value);
+                self.emit_memcall(func, "get_iterator", 1);
+            }
             Expr::IterResultSet(value, done) => {
                 self.emit_frame_begin(func, 2);
                 self.emit_store_arg(func, 0, value);
