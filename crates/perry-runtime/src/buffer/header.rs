@@ -217,12 +217,38 @@ static BUFFER_LIKE_EVER_REGISTERED: RegistryLatch = RegistryLatch::new();
 /// [`RegistryAddrWindow`] for the ordering rule that makes it so.
 static BUFFER_LIKE_ADDR_WINDOW: RegistryAddrWindow = RegistryAddrWindow::new();
 
+/// Called only after the allocation header proves GC_TYPE_OBJECT. The ABI can
+/// register that storage too, so the exception window is part of the proof.
+#[inline]
+pub(crate) fn ordinary_object_has_no_buffer_brand(addr: usize) -> bool {
+    if NON_BUFFER_REGISTRATION_WINDOW.may_contain(addr) {
+        return false;
+    }
+    #[cfg(debug_assertions)]
+    {
+        assert!(
+            !is_registered_buffer_slow(addr),
+            "ordinary receiver is a registered buffer"
+        );
+        assert!(
+            !is_uint8array_buffer_slow(addr),
+            "ordinary receiver is a Uint8Array backing"
+        );
+        assert!(!ARRAY_BUFFER_REGISTRY.with(|r| r.borrow().contains(&addr)));
+        assert!(!SHARED_ARRAY_BUFFER_REGISTRY.with(|r| r.borrow().contains(&addr)));
+        assert!(!DATA_VIEW_REGISTRY.with(|r| r.borrow().contains(&addr)));
+    }
+    true
+}
+
 // `register_buffer` also accepts foreign pointers and GC objects with other
 // types. Admit exceptions before publishing; never assume the ABI brands them.
 static NON_BUFFER_REGISTRATION_WINDOW: RegistryAddrWindow = RegistryAddrWindow::new();
 
 #[inline]
 fn is_non_buffer_arena_addr(addr: usize) -> bool {
+    #[cfg(test)]
+    TEST_BUFFER_BITMAP_PROBES.with(|c| c.set(c.get() + 1));
     let Some((_, base, starts)) = crate::arena::classify_heap_space_in_range(addr) else {
         return false;
     };
@@ -248,7 +274,13 @@ thread_local! {
 /// Per THREAD, not per process, exactly like `TEST_TA_REGISTRY_PROBES`: the
 /// registry it guards is thread-local and `cargo test` gives each case its own
 /// thread inside one process.
+    static TEST_BUFFER_BITMAP_PROBES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     static TEST_BUFFER_REGISTRY_PROBES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn test_buffer_bitmap_probe_count() -> u64 {
+    TEST_BUFFER_BITMAP_PROBES.with(|c| c.get())
 }
 
 #[cfg(test)]
@@ -337,6 +369,7 @@ static ASYMMETRIC_KEY_EVER_MARKED: RegistryLatch = RegistryLatch::new();
 static BUFFER_AB_ALIAS_EVER_SET: RegistryLatch = RegistryLatch::new();
 
 pub fn mark_as_array_buffer(addr: usize) {
+    NON_BUFFER_REGISTRATION_WINDOW.admit(addr);
     ARRAY_BUFFER_EVER_MARKED.arm();
     ARRAY_BUFFER_REGISTRY.with(|r| {
         r.borrow_mut().insert(addr);
@@ -352,6 +385,7 @@ pub fn is_array_buffer(addr: usize) -> bool {
 }
 
 pub fn mark_as_shared_array_buffer(addr: usize) {
+    NON_BUFFER_REGISTRATION_WINDOW.admit(addr);
     SHARED_ARRAY_BUFFER_EVER_MARKED.arm();
     SHARED_ARRAY_BUFFER_REGISTRY.with(|r| {
         r.borrow_mut().insert(addr);
@@ -380,6 +414,7 @@ pub fn is_any_array_buffer(addr: usize) -> bool {
 }
 
 pub fn mark_as_data_view(addr: usize) {
+    NON_BUFFER_REGISTRATION_WINDOW.admit(addr);
     DATA_VIEW_EVER_MARKED.arm();
     DATA_VIEW_REGISTRY.with(|r| {
         r.borrow_mut().insert(addr);
@@ -409,6 +444,13 @@ pub(crate) fn test_shared_array_buffer_registry_len() -> usize {
 
 /// Register a buffer pointer in the thread-local registry
 pub fn register_buffer(ptr: *const BufferHeader) {
+    // Arbitrary registrations can reuse an old bitmap boundary. Only the two
+    // GC_TYPE_BUFFER birth sites may bypass this conservative admission.
+    NON_BUFFER_REGISTRATION_WINDOW.admit(ptr as usize);
+    register_buffer_inner(ptr);
+}
+
+fn register_buffer_inner(ptr: *const BufferHeader) {
     // A FRESH buffer must not inherit the own properties of a dead one that
     // happened to sit at the same address (the own-prop table is address-keyed
     // and buffer storage is recycled). mysql2 measures a packet against a
@@ -425,9 +467,6 @@ pub fn register_buffer(ptr: *const BufferHeader) {
     // this buffer is in the registry while `is_registered_buffer` still takes
     // the idle fast path and denies it. See `crate::registry_latch`.
     let addr = ptr as usize;
-    if is_non_buffer_arena_addr(addr) {
-        NON_BUFFER_REGISTRATION_WINDOW.admit(addr);
-    }
     BUFFER_LIKE_ADDR_WINDOW.admit(addr);
     BUFFER_LIKE_EVER_REGISTERED.arm();
     BUFFER_ADDR_RANGE.with(|r| {
@@ -546,6 +585,7 @@ fn is_registered_buffer_slow(addr: usize) -> bool {
 /// Mark this buffer as one that came from `new Uint8Array(...)` so it
 /// formats as `Uint8Array(N) [ ... ]` rather than `<Buffer ...>`.
 pub fn mark_as_uint8array(addr: usize) {
+    NON_BUFFER_REGISTRATION_WINDOW.admit(addr);
     // Widen before arming, and arm before the insert: the probe consults the
     // latch and then the window, so both must already cover this address by the
     // time it becomes findable. See `crate::registry_latch`.
@@ -960,7 +1000,7 @@ pub fn buffer_alloc(capacity: u32) -> *mut BufferHeader {
         (*ptr).length = 0;
         (*ptr).capacity = capacity;
     }
-    register_buffer(ptr);
+    register_buffer_inner(ptr);
     ptr
 }
 
@@ -983,7 +1023,7 @@ pub(crate) fn buffer_alloc_foreign(data: *mut u8, length: u32) -> *mut BufferHea
         (*ptr).length = length;
         (*ptr).capacity = length;
     }
-    register_buffer(ptr);
+    register_buffer_inner(ptr);
     // Arm before publishing the map entry; see `RegistryLatch`'s ordering
     // contract and the analogous buffer-registration path above.
     FOREIGN_BACKING_EVER_REGISTERED.arm();

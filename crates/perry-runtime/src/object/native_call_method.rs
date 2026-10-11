@@ -113,16 +113,9 @@ unsafe fn class_vtable_fast_guard(object: f64, method_bytes: &[u8]) -> Option<(u
     if !crate::value::addr_class::is_above_handle_band(obj_addr) {
         return None;
     }
-    // `gc_pointer_and_type_from_value` — NOT a bare `obj - GC_HEADER_SIZE`
-    // read. Buffers, ArrayBuffers, typed arrays, Sets, Maps, RegExps, Symbols
-    // and AsyncResource handles are raw allocations with no `GcHeader` at that
-    // offset, so reading one directly loads foreign allocator bytes that can
-    // and do coincidentally equal a real GC type (see `handle_methods.rs`'s
-    // buffer comment, and #5625 where a typed array's stale bytes matched
-    // `GC_TYPE_TEMPORAL`). This helper screens every one of those registries
-    // first — and it is the same screen the tower's own object-pointer
-    // resolution uses, so the fast path cannot classify a receiver differently
-    // from the code it is short-circuiting.
+    // The shared classifier first proves an arena object's allocation kind and
+    // excludes registration exceptions. Foreign or ambiguous storage keeps the
+    // original registry screen before any object-layout read.
     let (ptr, gc_type) = gc_pointer_and_type_from_value(object)?;
     if gc_type != crate::gc::GC_TYPE_OBJECT || ptr as usize != obj_addr {
         return None;
@@ -168,11 +161,8 @@ unsafe fn class_vtable_fast_guard(object: f64, method_bytes: &[u8]) -> Option<(u
         if key_count > 65536 {
             return None;
         }
-        for i in 0..key_count {
-            let key_val = crate::array::js_array_get(keys, i as u32);
-            if crate::string::js_string_key_matches_bytes(key_val, method_bytes) {
-                return None;
-            }
+        if keys_find_slot_by_bytes_indexed(keys, key_count as u32, method_bytes).is_some() {
+            return None;
         }
     }
 
@@ -1003,6 +993,9 @@ unsafe fn gc_pointer_and_type_from_value(value: f64) -> Option<(*const u8, u8)> 
         return None;
     }
     let addr = ptr as usize;
+    if crate::value::addr_class::ordinary_object_without_view_brand(addr) {
+        return Some((ptr, crate::gc::GC_TYPE_OBJECT));
+    }
     if crate::buffer::is_any_array_buffer(addr) {
         return Some((ptr, crate::gc::GC_TYPE_BUFFER));
     }
@@ -1860,6 +1853,12 @@ pub unsafe extern "C-unwind" fn js_native_call_method(
         return result;
     }
 
+    let receiver_bits = object().to_bits();
+    let ordinary_receiver = (receiver_bits & crate::value::TAG_MASK == crate::value::POINTER_TAG
+        || receiver_bits >> 48 == 0)
+        && crate::value::addr_class::ordinary_object_without_view_brand(
+            (receiver_bits & crate::value::POINTER_MASK) as usize,
+        );
     if let Some(r) = primitive_methods::dispatch_primitive(
         &root_scope,
         &object_handle,
@@ -1870,6 +1869,7 @@ pub unsafe extern "C-unwind" fn js_native_call_method(
         method_name_len,
         args_ptr,
         args_len,
+        ordinary_receiver,
     ) {
         return r;
     }
@@ -1898,6 +1898,7 @@ pub unsafe extern "C-unwind" fn js_native_call_method(
         method_name_len,
         args_ptr,
         args_len,
+        ordinary_receiver,
     ) {
         return r;
     }
@@ -1912,6 +1913,7 @@ pub unsafe extern "C-unwind" fn js_native_call_method(
         method_name_len,
         args_ptr,
         args_len,
+        ordinary_receiver,
     ) {
         return r;
     }
@@ -2148,43 +2150,38 @@ pub unsafe extern "C-unwind" fn js_native_call_method(
             // perf-comprehensive's hot-path samples (one alloc per
             // dynamic-dispatch method call × N keys-array lookups).
             let method_bytes = method_name.as_bytes();
-            for i in 0..key_count {
-                let key_val = crate::array::js_array_get(keys, i as u32);
-                if crate::string::js_string_key_matches_bytes(key_val, method_bytes) {
-                    // Found the method — delegate to `js_native_call_value`
-                    // which handles both NaN-boxed pointers (POINTER_TAG)
-                    // and raw-pointer-bits (e.g. the resolve/reject
-                    // closures from `js_promise_new_with_executor`,
-                    // transmuted `i64 → f64` so their bits live outside
-                    // the NaN range). The earlier `is_pointer()` gate
-                    // bailed on the raw-pointer case: `{ resolve }` on a
-                    // plain object caused `box.resolve(x)` to land here,
-                    // the tag check failed, we fell through to vtable
-                    // lookup, and returned NULL_OBJECT_BYTES without
-                    // invoking `js_promise_resolve` → the awaiter hung
-                    // forever (issue #87). `js_native_call_value`
-                    // validates CLOSURE_MAGIC before calling the func
-                    // pointer, so non-callable field values (numbers,
-                    // strings, booleans) safely return undefined.
-                    let field_val = js_object_get_field(obj as *mut _, i as u32);
-                    let bound = crate::closure::clone_closure_rebind_this(
-                        field_val.bits(),
-                        f64::from_bits(jsval().bits()),
-                    );
-                    // #8495: root the displaced receiver across the call below — the
-                    // replace has already overwritten the cell, so this is the frame's only
-                    // copy and the restore would otherwise publish a pre-move address.
-                    let prev_this_scope = crate::gc::RuntimeHandleScope::new();
-                    let prev_this_h = prev_this_scope
-                        .root_nanbox_u64(IMPLICIT_THIS.with(|c| c.replace(jsval().bits())));
-                    let result = crate::closure::js_native_call_value(
-                        f64::from_bits(bound),
-                        args_ptr,
-                        args_len,
-                    );
-                    IMPLICIT_THIS.with(|c| c.set(prev_this_h.get_nanbox_u64()));
-                    return result;
-                }
+            if let Some(i) = keys_find_slot_by_bytes_indexed(keys, key_count as u32, method_bytes) {
+                // Found the method — delegate to `js_native_call_value`
+                // which handles both NaN-boxed pointers (POINTER_TAG)
+                // and raw-pointer-bits (e.g. the resolve/reject
+                // closures from `js_promise_new_with_executor`,
+                // transmuted `i64 → f64` so their bits live outside
+                // the NaN range). The earlier `is_pointer()` gate
+                // bailed on the raw-pointer case: `{ resolve }` on a
+                // plain object caused `box.resolve(x)` to land here,
+                // the tag check failed, we fell through to vtable
+                // lookup, and returned NULL_OBJECT_BYTES without
+                // invoking `js_promise_resolve` → the awaiter hung
+                // forever (issue #87). `js_native_call_value`
+                // validates CLOSURE_MAGIC before calling the func
+                // pointer, so non-callable field values (numbers,
+                // strings, booleans) safely return undefined.
+                let field_val =
+                    object_field_at_with_live(obj, i, descriptor.live_inline_slot_count);
+                let bound = crate::closure::clone_closure_rebind_this(
+                    field_val.bits(),
+                    f64::from_bits(jsval().bits()),
+                );
+                // #8495: root the displaced receiver across the call below — the
+                // replace has already overwritten the cell, so this is the frame's only
+                // copy and the restore would otherwise publish a pre-move address.
+                let prev_this_scope = crate::gc::RuntimeHandleScope::new();
+                let prev_this_h = prev_this_scope
+                    .root_nanbox_u64(IMPLICIT_THIS.with(|c| c.replace(jsval().bits())));
+                let result =
+                    crate::closure::js_native_call_value(f64::from_bits(bound), args_ptr, args_len);
+                IMPLICIT_THIS.with(|c| c.set(prev_this_h.get_nanbox_u64()));
+                return result;
             }
         }
 

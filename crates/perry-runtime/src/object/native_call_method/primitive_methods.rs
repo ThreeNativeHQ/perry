@@ -11,6 +11,7 @@ pub(super) unsafe fn dispatch_primitive(
     method_name_len: usize,
     args_ptr: *const f64,
     args_len: usize,
+    ordinary_receiver: bool,
 ) -> Option<f64> {
     let jsval = JSValue::from_bits(object.to_bits());
     let raw_bits = object.to_bits();
@@ -22,7 +23,7 @@ pub(super) unsafe fn dispatch_primitive(
     // codegen fast-path, so every method call funnels through here. The router
     // throws `TypeError` for an unknown method name on a real Temporal receiver.
     #[cfg(feature = "temporal")]
-    if crate::temporal::is_temporal_value(object) {
+    if !ordinary_receiver && crate::temporal::is_temporal_value(object) {
         let args = refreshed_args();
         return Some(crate::temporal::dispatch::call_method(
             object,
@@ -325,7 +326,9 @@ pub(super) unsafe fn dispatch_primitive(
     // dispatch to a custom `then` when present (test262 all/race/allSettled/any
     // `invoke-then.js`). A callable own override wins here; a promise without
     // one falls through to the intrinsic then/catch/finally block below.
-    if crate::promise::js_value_is_promise(object_handle.get_nanbox_f64()) != 0 {
+    if !ordinary_receiver
+        && crate::promise::js_value_is_promise(object_handle.get_nanbox_f64()) != 0
+    {
         let recv = object_handle.get_nanbox_f64();
         let raw = (recv.to_bits() & 0x0000_FFFF_FFFF_FFFF) as usize;
         if let Some(v) = super::exotic_expando::exotic_get_own_property(
@@ -361,7 +364,8 @@ pub(super) unsafe fn dispatch_primitive(
     // and return undefined — drizzle's `MySqlRemoteSession.all` then
     // resolves to undefined and downstream `data[0].insertId` accesses
     // silently fail.
-    if matches!(method_name, "then" | "catch" | "finally")
+    if !ordinary_receiver
+        && matches!(method_name, "then" | "catch" | "finally")
         && crate::promise::js_value_is_promise(object_handle.get_nanbox_f64()) != 0
     {
         let promise_val = object_handle.get_nanbox_f64();
@@ -666,7 +670,7 @@ pub(super) unsafe fn dispatch_primitive(
     // every other dynamic/computed call (`date[m](...)`, `Reflect.apply`) fell
     // through and silently dropped setter mutations — e.g. dayjs's
     // `this.$d[l]($)` made `.add()`/`.date(n)` no-ops (#5133).
-    if crate::date::is_date_value(object) {
+    if !ordinary_receiver && crate::date::is_date_value(object) {
         // An own callable expando shadows the intrinsic Date.prototype method:
         // `Object.defineProperty(d, "toString", {value: Number.prototype.toString});
         // d.toString()` must run the *transferred* method (which brand-checks its
@@ -856,7 +860,7 @@ pub(super) unsafe fn dispatch_primitive(
     // bits classify as `is_number()` (top16 outside the tagged range).
     {
         let top16 = raw_bits >> 48;
-        if top16 == 0 && raw_bits >= 0x10000 {
+        if !ordinary_receiver && top16 == 0 && raw_bits >= 0x10000 {
             let addr = raw_bits as usize;
             if crate::typedarray::lookup_typed_array_kind(addr).is_some() {
                 let ta = addr as *mut crate::typedarray::TypedArrayHeader;

@@ -139,7 +139,10 @@ pub extern "C" fn js_object_get_own_field_or_undef(
         if type_tag_at_12 == crate::closure::CLOSURE_MAGIC {
             return f64::from_bits(TAG_UNDEF);
         }
-        let keys = crate::object::object_keys_array(obj);
+        let Some(descriptor) = crate::object::shapes::object_shape_descriptor(obj) else {
+            return f64::from_bits(TAG_UNDEF);
+        };
+        let keys = descriptor.keys as *const crate::array::ArrayHeader;
         if keys.is_null() {
             return f64::from_bits(TAG_UNDEF);
         }
@@ -153,31 +156,15 @@ pub extern "C" fn js_object_get_own_field_or_undef(
             return f64::from_bits(TAG_UNDEF);
         }
         let key_bytes = std::slice::from_raw_parts(name_ptr, name_len);
-        let key_count = crate::array::js_array_length(keys) as usize;
+        let key_count = descriptor.logical_key_count as usize;
         if key_count > 65536 {
             return f64::from_bits(TAG_UNDEF);
         }
-        let alloc_limit = std::cmp::max(
-            crate::object::object_live_slot_count(obj),
-            crate::object::INLINE_SLOT_FLOOR as u32,
-        ) as usize;
-        for i in 0..key_count {
-            let key_val = crate::array::js_array_get(keys, i as u32);
-            // #1781: SSO-aware match by byte slice — the
-            // own-property-or-undef path was the route through which
-            // hono's `c.req.X` dispatch decided to invoke the vtable
-            // getter, and pre-fix a SSO-stored `X` was invisible here.
-            if crate::string::js_string_key_matches_bytes(key_val, key_bytes) {
-                let val = if i < alloc_limit {
-                    js_object_get_field(obj, i as u32)
-                } else {
-                    match overflow_get(obj as usize, i) {
-                        Some(bits) => crate::JSValue::from_bits(bits),
-                        None => return f64::from_bits(TAG_UNDEF),
-                    }
-                };
-                return f64::from_bits(val.bits());
-            }
+
+        if let Some(i) = keys_find_slot_by_bytes_indexed(keys, key_count as u32, key_bytes) {
+            let i = i as usize;
+            let val = object_field_at_with_live(obj, i as u32, descriptor.live_inline_slot_count);
+            return f64::from_bits(val.bits());
         }
         f64::from_bits(TAG_UNDEF)
     }

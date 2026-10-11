@@ -44,7 +44,7 @@ pub(crate) use view::resolve_data_ptr as resolve_span_data_ptr;
 pub use header::{BufferHeader, BUFFER_TYPE_ID, SMALL_BUF_THRESHOLD};
 
 // ---- Re-exports: allocation / registry helpers ----
-pub(crate) use header::is_small_buf_slab_addr;
+pub(crate) use header::{is_small_buf_slab_addr, ordinary_object_has_no_buffer_brand};
 // #9342: primed by `typedarray::js_u8_buffer_read_f64` (codegen slow arm).
 #[cfg(test)]
 pub(crate) use header::test_u8_inline_cache_holds;
@@ -68,7 +68,8 @@ pub(crate) use header::{
 };
 #[cfg(test)]
 pub(crate) use header::{
-    test_buffer_addr_window_bounds, test_buffer_registry_probe_count, test_data_view_registry_len,
+    test_buffer_addr_window_bounds, test_buffer_bitmap_probe_count,
+    test_buffer_registry_probe_count, test_data_view_registry_len,
     test_shared_array_buffer_registry_len, test_uint8array_addr_window_bounds,
     test_uint8array_registry_probe_count,
 };

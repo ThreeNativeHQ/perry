@@ -54,6 +54,7 @@ pub(super) unsafe fn dispatch_map_set(
     method_name_len: usize,
     args_ptr: *const f64,
     args_len: usize,
+    ordinary_receiver: bool,
 ) -> Option<f64> {
     let jsval = JSValue::from_bits(object.to_bits());
     let raw_bits = object.to_bits();
@@ -121,6 +122,7 @@ pub(super) unsafe fn dispatch_map_set(
             method_name_len,
             args_ptr,
             args_len,
+            false,
         );
         // `Map.prototype.set` / `Set.prototype.add` return the receiver — the
         // SUBCLASS INSTANCE, not the hidden backing — so chains preserve identity.
@@ -304,7 +306,7 @@ pub(super) unsafe fn dispatch_map_set(
             // path below. Tracked in BUFFER_REGISTRY. Routes Node-style
             // numeric read/write/search/swap method family through
             // `crate::buffer` helpers.
-            if crate::buffer::is_registered_buffer(check_ptr) {
+            if !ordinary_receiver && crate::buffer::is_registered_buffer(check_ptr) {
                 return Some(dispatch_buffer_method(
                     check_ptr,
                     method_name,
@@ -437,24 +439,29 @@ pub(super) unsafe fn dispatch_raw_pointer(
             }
 
             // Field name scan on this object
-            let keys = crate::object::object_keys_array(obj);
-            if !keys.is_null() {
+            if let Some(descriptor) = crate::object::shapes::object_shape_descriptor(obj)
+                .filter(|descriptor| descriptor.keys != 0)
+            {
+                let keys = descriptor.keys as *const crate::array::ArrayHeader;
                 let keys_ptr = keys as usize;
                 if (keys_ptr as u64) >> 48 == 0 && keys_ptr >= 0x10000 {
-                    let key_count = crate::array::js_array_length(keys) as usize;
+                    let key_count = descriptor.logical_key_count as usize;
                     if key_count <= 65536 {
                         let method_bytes = method_name.as_bytes();
-                        for i in 0..key_count {
-                            let key_val = crate::array::js_array_get(keys, i as u32);
-                            if crate::string::js_string_key_matches_bytes(key_val, method_bytes) {
-                                let field_val = js_object_get_field(obj as *mut _, i as u32);
-                                if field_val.is_pointer() {
-                                    return Some(crate::closure::js_native_call_value(
-                                        f64::from_bits(field_val.bits()),
-                                        args_ptr,
-                                        args_len,
-                                    ));
-                                }
+                        if let Some(i) =
+                            keys_find_slot_by_bytes_indexed(keys, key_count as u32, method_bytes)
+                        {
+                            let field_val = object_field_at_with_live(
+                                obj,
+                                i,
+                                descriptor.live_inline_slot_count,
+                            );
+                            if field_val.is_pointer() {
+                                return Some(crate::closure::js_native_call_value(
+                                    f64::from_bits(field_val.bits()),
+                                    args_ptr,
+                                    args_len,
+                                ));
                             }
                         }
                     }

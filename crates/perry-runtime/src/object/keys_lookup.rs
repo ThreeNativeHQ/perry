@@ -94,6 +94,14 @@ pub(crate) unsafe fn keys_find_slot_by_bytes(
             shapes::KeysIndexVerdict::Unindexed => {}
         }
     }
+    keys_find_slot_by_bytes_dense(keys, key_count, key_bytes)
+}
+
+unsafe fn keys_find_slot_by_bytes_dense(
+    keys: *const crate::array::ArrayHeader,
+    key_count: u32,
+    key_bytes: &[u8],
+) -> Option<u32> {
     let (slots, slot_len) = keys_array_dense_slots(keys);
     if slots.is_null() {
         return None;
@@ -109,6 +117,29 @@ pub(crate) unsafe fn keys_find_slot_by_bytes(
         }
     }
     None
+}
+
+/// Repeated private/method-name reads amortize the existing shape index even on
+/// short key lists. Shape transitions/deletion invalidate it through the same owner.
+pub(crate) unsafe fn keys_find_slot_by_bytes_indexed(
+    keys: *const crate::array::ArrayHeader,
+    count: u32,
+    bytes: &[u8],
+) -> Option<u32> {
+    let answer = match shapes::shape_slot_lookup_verdict(
+        keys,
+        bytes,
+        key_bytes_hash(bytes.as_ptr(), bytes.len()),
+        count,
+        true,
+    ) {
+        shapes::KeysIndexVerdict::Found(slot) => Some(slot),
+        shapes::KeysIndexVerdict::Absent => None,
+        shapes::KeysIndexVerdict::Unindexed => return keys_find_slot_by_bytes(keys, count, bytes),
+    };
+    #[cfg(debug_assertions)]
+    assert_eq!(answer, keys_find_slot_by_bytes_dense(keys, count, bytes));
+    answer
 }
 
 /// [`keys_find_slot_by_bytes`] for a key held as a `StringHeader`.

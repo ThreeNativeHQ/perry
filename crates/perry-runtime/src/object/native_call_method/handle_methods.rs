@@ -66,6 +66,7 @@ pub(super) unsafe fn dispatch_handle(
     method_name_len: usize,
     args_ptr: *const f64,
     args_len: usize,
+    ordinary_receiver: bool,
 ) -> Option<f64> {
     let jsval = JSValue::from_bits(object.to_bits());
     let raw_bits = object.to_bits();
@@ -150,7 +151,7 @@ pub(super) unsafe fn dispatch_handle(
         // before the buffer storage and may accidentally match GC_TYPE_OBJECT.
         // Detect buffers via the BUFFER_REGISTRY first and route through the
         // dedicated dispatcher.
-        if crate::buffer::is_registered_buffer(raw_ptr) {
+        if !ordinary_receiver && crate::buffer::is_registered_buffer(raw_ptr) {
             return Some(dispatch_buffer_method(
                 raw_ptr,
                 method_name,
@@ -166,7 +167,7 @@ pub(super) unsafe fn dispatch_handle(
         // callback-bearing + immutable methods to the shared helper before the
         // GC_TYPE_ARRAY check below (which only matches plain arrays).
         // Issues #2797 / #2798 / #2799.
-        if crate::typedarray::lookup_typed_array_kind(raw_ptr).is_some() {
+        if !ordinary_receiver && crate::typedarray::lookup_typed_array_kind(raw_ptr).is_some() {
             let ta = raw_ptr as *mut crate::typedarray::TypedArrayHeader;
             if let Some(r) = dispatch_typed_array_method(ta, method_name, args_ptr, args_len) {
                 return Some(r);
@@ -959,60 +960,65 @@ pub(super) unsafe fn dispatch_handle(
             }
 
             // Scan object fields for a callable property (closure stored via IndexSet)
-            let keys = crate::object::object_keys_array(obj);
-            if !keys.is_null() {
+            if let Some(descriptor) = crate::object::shapes::object_shape_descriptor(obj)
+                .filter(|descriptor| descriptor.keys != 0)
+            {
+                let keys = descriptor.keys as *const crate::array::ArrayHeader;
                 let keys_ptr = keys as usize;
                 if (keys_ptr as u64) >> 48 == 0 && keys_ptr >= 0x10000 {
-                    let key_count = crate::array::js_array_length(keys) as usize;
+                    let key_count = descriptor.logical_key_count as usize;
                     if key_count <= 65536 {
                         let method_bytes = method_name.as_bytes();
-                        for i in 0..key_count {
-                            let key_val = crate::array::js_array_get(keys, i as u32);
-                            if crate::string::js_string_key_matches_bytes(key_val, method_bytes) {
-                                let field_val = js_object_get_field(obj as *mut _, i as u32);
-                                // Always try the field as a callable —
-                                // `js_native_call_value` validates
-                                // CLOSURE_MAGIC internally and safely
-                                // returns undefined for non-callables.
-                                // The previous `is_pointer()` gate bailed
-                                // on raw-pointer-bit values (e.g. the
-                                // Promise executor's resolve/reject
-                                // closures — stored as
-                                // `transmute(ptr → f64)` without a
-                                // POINTER_TAG). That turned
-                                // `box.resolve(val)` into a no-op that
-                                // returned the raw pointer bits instead
-                                // of invoking `js_promise_resolve`, so
-                                // the outer `await` hung forever
-                                // (issue #87).
-                                //
-                                // Issue #519: bind `this` to the receiver
-                                // for the duration of the call. Non-arrow
-                                // function bodies read `this` from
-                                // IMPLICIT_THIS (codegen Expr::This
-                                // fallback when this_stack is empty);
-                                // without this save/set/restore, the
-                                // body sees `this = undefined` and any
-                                // `this.foo()` call falls through to the
-                                // issue #510 catch-all "(undefined).foo
-                                // is not a function" TypeError. Hono's
-                                // RegExpRouter.match (imported function
-                                // assigned as a class field) hit this.
-                                let recv_bits = jsval.bits();
-                                // #8495: root the displaced receiver across the call below — the
-                                // replace has already overwritten the cell, so this is the frame's only
-                                // copy and the restore would otherwise publish a pre-move address.
-                                let prev_this_scope = crate::gc::RuntimeHandleScope::new();
-                                let prev_this_h = prev_this_scope
-                                    .root_nanbox_u64(IMPLICIT_THIS.with(|c| c.replace(recv_bits)));
-                                let result = crate::closure::js_native_call_value(
-                                    f64::from_bits(field_val.bits()),
-                                    args_ptr,
-                                    args_len,
-                                );
-                                IMPLICIT_THIS.with(|c| c.set(prev_this_h.get_nanbox_u64()));
-                                return Some(result);
-                            }
+                        if let Some(i) =
+                            keys_find_slot_by_bytes_indexed(keys, key_count as u32, method_bytes)
+                        {
+                            let field_val = object_field_at_with_live(
+                                obj,
+                                i,
+                                descriptor.live_inline_slot_count,
+                            );
+                            // Always try the field as a callable —
+                            // `js_native_call_value` validates
+                            // CLOSURE_MAGIC internally and safely
+                            // returns undefined for non-callables.
+                            // The previous `is_pointer()` gate bailed
+                            // on raw-pointer-bit values (e.g. the
+                            // Promise executor's resolve/reject
+                            // closures — stored as
+                            // `transmute(ptr → f64)` without a
+                            // POINTER_TAG). That turned
+                            // `box.resolve(val)` into a no-op that
+                            // returned the raw pointer bits instead
+                            // of invoking `js_promise_resolve`, so
+                            // the outer `await` hung forever
+                            // (issue #87).
+                            //
+                            // Issue #519: bind `this` to the receiver
+                            // for the duration of the call. Non-arrow
+                            // function bodies read `this` from
+                            // IMPLICIT_THIS (codegen Expr::This
+                            // fallback when this_stack is empty);
+                            // without this save/set/restore, the
+                            // body sees `this = undefined` and any
+                            // `this.foo()` call falls through to the
+                            // issue #510 catch-all "(undefined).foo
+                            // is not a function" TypeError. Hono's
+                            // RegExpRouter.match (imported function
+                            // assigned as a class field) hit this.
+                            let recv_bits = jsval.bits();
+                            // #8495: root the displaced receiver across the call below — the
+                            // replace has already overwritten the cell, so this is the frame's only
+                            // copy and the restore would otherwise publish a pre-move address.
+                            let prev_this_scope = crate::gc::RuntimeHandleScope::new();
+                            let prev_this_h = prev_this_scope
+                                .root_nanbox_u64(IMPLICIT_THIS.with(|c| c.replace(recv_bits)));
+                            let result = crate::closure::js_native_call_value(
+                                f64::from_bits(field_val.bits()),
+                                args_ptr,
+                                args_len,
+                            );
+                            IMPLICIT_THIS.with(|c| c.set(prev_this_h.get_nanbox_u64()));
+                            return Some(result);
                         }
                     }
                 }
@@ -1351,6 +1357,7 @@ mod tests {
                 3,
                 std::ptr::null(),
                 0,
+                false,
             )
         };
         assert!(result.is_none());

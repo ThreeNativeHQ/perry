@@ -234,6 +234,31 @@ pub(crate) unsafe fn try_read_gc_header(addr: usize) -> Option<&'static GcHeader
     Some(&*((addr - GC_HEADER_SIZE) as *const GcHeader))
 }
 
+/// Header-only ordinary receiver proof. Foreign allocations (including shared
+/// SABs) cannot be on an arena page; registration exceptions stay on the slow path.
+/// Safety: `addr` is a live receiver address, as for `try_read_gc_header`.
+#[inline]
+pub(crate) unsafe fn ordinary_object_without_view_brand(addr: usize) -> bool {
+    if !is_above_handle_band(addr) || addr % std::mem::align_of::<GcHeader>() != 0 {
+        return false;
+    }
+    let Some((_, base, _)) = crate::arena::classify_heap_space_in_range(addr) else {
+        return false;
+    };
+    let Some(header_addr) = addr.checked_sub(GC_HEADER_SIZE) else {
+        return false;
+    };
+    if header_addr < base {
+        return false;
+    }
+    let header = &*(header_addr as *const GcHeader);
+    header.obj_type == crate::gc::GC_TYPE_OBJECT
+        && header.gc_flags & (crate::gc::GC_FLAG_ARENA | crate::gc::GC_FLAG_FORWARDED)
+            == crate::gc::GC_FLAG_ARENA
+        && crate::buffer::ordinary_object_has_no_buffer_brand(addr)
+        && crate::typedarray::ordinary_object_has_no_typed_array_brand(addr)
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TrackedGcStorage {
     Arena,

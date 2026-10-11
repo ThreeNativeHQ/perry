@@ -1940,3 +1940,6 @@ pub(crate) unsafe fn cell_expando_get(user_ptr: usize) -> Option<*mut ObjectHead
             as *mut ObjectHeader,
     )
 }
+
+#[cfg(test)]
+mod b17_receiver_tests;

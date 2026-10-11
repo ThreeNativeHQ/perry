@@ -138,6 +138,9 @@ fn get_object_prototypes() -> &'static Mutex<HashMap<usize, u64>> {
 /// The classification is a pure function of the allocation, so an owner is
 /// always on exactly one of the two storages.
 pub(crate) unsafe fn meta_capable_object(obj_ptr: usize) -> Option<*mut crate::ObjectHeader> {
+    if crate::value::addr_class::ordinary_object_without_view_brand(obj_ptr) {
+        return Some(obj_ptr as *mut crate::ObjectHeader);
+    }
     if !crate::value::addr_class::is_above_handle_band(obj_ptr)
         // ArrayBuffer / SharedArrayBuffer / DataView use BufferHeader storage.
         // Some of those headers pass the legacy ObjectHeader validity probe,

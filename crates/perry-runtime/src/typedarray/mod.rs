@@ -396,7 +396,33 @@ pub(crate) fn test_typed_array_window_admitted_probe_count() -> u64 {
     TEST_TA_WINDOW_ADMITTED_PROBES.with(|c| c.get())
 }
 
+// The registration ABI admits non-TypedArray GC storage and foreign headers.
+static NON_TYPED_ARRAY_REGISTRATION_WINDOW: crate::registry_latch::RegistryAddrWindow =
+    crate::registry_latch::RegistryAddrWindow::new();
+
+#[inline]
+pub(crate) fn ordinary_object_has_no_typed_array_brand(addr: usize) -> bool {
+    if NON_TYPED_ARRAY_REGISTRATION_WINDOW.may_contain(addr) {
+        return false;
+    }
+    #[cfg(debug_assertions)]
+    assert!(
+        TYPED_ARRAY_REGISTRY
+            .with(|r| r.borrow().get(&addr).copied())
+            .is_none(),
+        "ordinary receiver is a registered typed array"
+    );
+    true
+}
+
 pub fn register_typed_array(ptr: *const TypedArrayHeader, kind: u8) {
+    // The ABI accepts arbitrary storage; do not read a candidate's header.
+    // Only the typed_array_alloc birth site may bypass exception admission.
+    NON_TYPED_ARRAY_REGISTRATION_WINDOW.admit(ptr as usize);
+    register_typed_array_inner(ptr, kind);
+}
+
+fn register_typed_array_inner(ptr: *const TypedArrayHeader, kind: u8) {
     // Arm BEFORE either table becomes readable — an arm placed after the stores
     // would leave a window in which `lookup_typed_array_kind` answers `None` for
     // this very array. See `crate::registry_latch`. The address window carries
@@ -1034,7 +1060,7 @@ pub fn typed_array_alloc(kind: u8, length: u32) -> *mut TypedArrayHeader {
         let data = data_ptr_mut(p);
         ptr::write_bytes(data, 0, (capacity as usize) * elem_size);
     }
-    register_typed_array(p, kind);
+    register_typed_array_inner(p, kind);
     p
 }
 
