@@ -724,6 +724,7 @@ impl WasmModuleEmitter {
                     self.void_funcs.insert(user_func_idx);
                 }
                 self.func_param_counts.insert(user_func_idx, param_count);
+                self.note_rest(user_func_idx, &func.params);
                 // Build func_name_map for ExternFuncRef resolution. Exported
                 // functions win the name; module-local helpers only fill a
                 // vacant slot (see exported_names above).
@@ -757,6 +758,7 @@ impl WasmModuleEmitter {
                     self.class_ctor_map
                         .insert(class.name.clone(), user_func_idx);
                     self.func_param_counts.insert(user_func_idx, param_count);
+                    self.note_rest(user_func_idx, &ctor.params);
                     user_func_idx += 1;
                 }
                 // Instance methods: params = this + declared params
@@ -771,6 +773,7 @@ impl WasmModuleEmitter {
                         .or_default()
                         .insert(method.name.clone(), user_func_idx);
                     self.func_param_counts.insert(user_func_idx, param_count);
+                    self.note_rest(user_func_idx, &method.params);
                     user_func_idx += 1;
                 }
                 // Static methods: no this param
@@ -788,6 +791,7 @@ impl WasmModuleEmitter {
                     self.func_name_map
                         .insert(format!("{}_{}", class.name, method.name), user_func_idx);
                     self.func_param_counts.insert(user_func_idx, param_count);
+                    self.note_rest(user_func_idx, &method.params);
                     user_func_idx += 1;
                 }
                 // Getters: like methods with 0 params + this
@@ -835,6 +839,7 @@ impl WasmModuleEmitter {
                 let type_idx = self.get_type_idx(wasm_params, results);
                 let _ = type_idx;
                 self.module_func_maps[*mod_idx].insert(*func_id, user_func_idx);
+                self.note_rest(user_func_idx, params);
                 user_func_idx += 1;
             }
         }
@@ -1432,6 +1437,20 @@ impl WasmModuleEmitter {
                 }
             }
 
+            // Mark `...rest` functions by table index so JS-side calls pack their tail (PRD-582).
+            let rest_mark = self.string_map.get("rest_func_mark").copied().unwrap_or(0);
+            for &idx in self.rest_funcs.keys() {
+                let table_idx = self.func_to_table_idx.get(&idx).copied().unwrap_or(idx);
+                func.instruction(&Instruction::I32Const(0xFF00));
+                func.instruction(&Instruction::I64Const((table_idx as f64).to_bits() as i64));
+                func.instruction(&Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                func.instruction(&f64_const(rest_mark as f64));
+                func.instruction(&f64_const(1.0));
+                func.instruction(&Instruction::I32Const(0xFF00));
+                func.instruction(&Instruction::Call(rt.mem_call));
+                func.instruction(&Instruction::Drop);
+            }
+
             // Register class methods with the bridge and set up inheritance
             for (mod_idx, (_, module)) in modules.iter().enumerate() {
                 self.func_map = self.module_func_maps[mod_idx].clone();
@@ -1657,6 +1676,15 @@ impl WasmModuleEmitter {
             async_js,
             ffi_imports: ffi_import_names,
             unsupported: self.unsupported.take().into_iter().collect(),
+        }
+    }
+}
+
+impl WasmModuleEmitter {
+    /// Record a function whose last parameter is `...rest` (PRD-582).
+    fn note_rest(&mut self, idx: u32, params: &[Param]) {
+        if params.last().is_some_and(|p| p.is_rest) {
+            self.rest_funcs.insert(idx, (params.len() - 1) as u32);
         }
     }
 }

@@ -28,6 +28,8 @@ impl<'a> FuncEmitCtx<'a> {
                         if let Some(&idx) =
                             self.emitter.imported_ns_funcs.get(&key).copied().as_ref()
                         {
+                            let packed = self.rest_packed_args(idx, args);
+                            let args: &[Expr] = packed.as_deref().unwrap_or(args);
                             for arg in args {
                                 self.emit_expr(func, arg);
                             }
@@ -131,6 +133,19 @@ impl<'a> FuncEmitCtx<'a> {
                     }
                 }
 
+                // A `...rest` callee takes its tail as one array (PRD-582).
+                let direct_idx = match callee.as_ref() {
+                    Expr::FuncRef(id) => self.emitter.func_map.get(id).copied(),
+                    Expr::ExternFuncRef { name, .. } => self
+                        .emitter
+                        .imported_func_indices
+                        .get(&(self.emitter.current_mod_idx, name.clone()))
+                        .or_else(|| self.emitter.func_name_map.get(name))
+                        .copied(),
+                    _ => None,
+                };
+                let packed = direct_idx.and_then(|idx| self.rest_packed_args(idx, args));
+                let args: &[Expr] = packed.as_deref().unwrap_or(args);
                 // Evaluate arguments first
                 for arg in args {
                     self.emit_expr(func, arg);
@@ -556,4 +571,15 @@ fn spread_elements(args: &[perry_hir::ir::CallArg]) -> Vec<perry_hir::ir::ArrayE
             perry_hir::ir::CallArg::Spread(e) => perry_hir::ir::ArrayElement::Spread(e.clone()),
         })
         .collect()
+}
+
+impl<'a> FuncEmitCtx<'a> {
+    /// Direct-call arguments for a `...rest` callee: the tail becomes one array (PRD-582).
+    pub(super) fn rest_packed_args(&self, idx: u32, args: &[Expr]) -> Option<Vec<Expr>> {
+        let at = *self.emitter.rest_funcs.get(&idx)? as usize;
+        let mut packed: Vec<Expr> = args.iter().take(at).cloned().collect();
+        packed.resize(at, Expr::Undefined);
+        packed.push(Expr::Array(args.iter().skip(at).cloned().collect()));
+        Some(packed)
+    }
 }

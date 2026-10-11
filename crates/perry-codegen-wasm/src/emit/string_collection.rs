@@ -274,6 +274,7 @@ impl WasmModuleEmitter {
             "new_dynamic",
             "for_of_next",
             "current_this",
+            "rest_func_mark",
             "object_create",
             "array_at",
             "json_parse",

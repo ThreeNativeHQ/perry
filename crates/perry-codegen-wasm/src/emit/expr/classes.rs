@@ -291,6 +291,8 @@ impl<'a> FuncEmitCtx<'a> {
                 self.emit_memcall(func, "class_new", 2);
                 // Call the compiled constructor if it exists
                 if let Some(&ctor_idx) = self.emitter.class_ctor_map.get(class_name.as_str()) {
+                    let packed = self.rest_packed_args(ctor_idx, args);
+                    let args: &[Expr] = packed.as_deref().unwrap_or(args);
                     // Stack: [instance_handle]
                     for arg in args {
                         self.emit_expr(func, arg);
@@ -341,6 +343,8 @@ impl<'a> FuncEmitCtx<'a> {
                     if let Some(parent_name) = self.emitter.class_parent_map.get(current_class) {
                         if let Some(&ctor_idx) = self.emitter.class_ctor_map.get(parent_name) {
                             // Call parent constructor with this + args
+                            let packed = self.rest_packed_args(ctor_idx, args);
+                            let args: &[Expr] = packed.as_deref().unwrap_or(args);
                             func.instruction(&Instruction::LocalGet(0)); // this
                             for arg in args {
                                 self.emit_expr(func, arg);
@@ -485,6 +489,8 @@ impl<'a> FuncEmitCtx<'a> {
                         // Direct call to compiled static method (no this param).
                         // Same arity reconciliation as FuncRef/ExternFuncRef arms
                         // (#183): pad-up for missing args, drop-excess for extras.
+                        let packed = self.rest_packed_args(static_idx, args);
+                        let args: &[Expr] = packed.as_deref().unwrap_or(args);
                         for arg in args {
                             self.emit_expr(func, arg);
                         }

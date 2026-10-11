@@ -26,9 +26,30 @@ function u64ToF64(u) { _u64[0] = u; return _f64[0]; }
 // throw "Cannot convert undefined to a BigInt". `prefix` is the count of leading
 // args already on the call (e.g. 1 for the receiver, or closure capture count).
 function __padBigintArgs(fn, prefix, bigintArgs) {
+  if (__isRestFn(fn)) {
+    // `...rest` is the last Wasm param: pack every argument from there into one array.
+    const at = Math.max(0, (fn.length | 0) - 1 - (prefix | 0));
+    const tail = bigintArgs.splice(at).map(__bitsToJsValue);
+    while (bigintArgs.length < at) bigintArgs.push(TAG_UNDEFINED);
+    bigintArgs.push(__jsValueToBits(tail));
+    return bigintArgs;
+  }
   const need = Math.max(0, (fn.length | 0) - (prefix | 0));
   while (bigintArgs.length < need) bigintArgs.push(TAG_UNDEFINED);
   return bigintArgs;
+}
+
+// Table indices of Wasm functions with a `...rest` parameter, resolved to function objects once
+// the instance exists (the start function marks them before `wasmInstance` is assigned).
+const __restTableIdx = [];
+let __restFns = null;
+function __isRestFn(fn) {
+  if (__restTableIdx.length === 0 || typeof wasmInstance === 'undefined' || !wasmInstance) return false;
+  if (__restFns === null) {
+    const table = wasmInstance.exports.__indirect_function_table;
+    __restFns = new WeakSet(__restTableIdx.map((i) => table.get(i)));
+  }
+  return __restFns.has(fn);
 }
 
 // NaN-box helpers
@@ -2166,6 +2187,7 @@ const __memDispatch = {
   global_this: () => globalThis,
   for_of_next: (it) => __classDispatch(it, 'next', []),
   current_this: () => __callThis,
+  rest_func_mark: (tableIdx) => { __restTableIdx.push(tableIdx); __restFns = null; },
   array_at: (a, i) => (Array.isArray(a) || typeof a === 'string' || ArrayBuffer.isView(a)) ? a.at(i) : undefined,
   object_create: (proto, props) => Object.create(proto, props),
   object_set_prototype_of: (o, p) => Object.setPrototypeOf(o, p),

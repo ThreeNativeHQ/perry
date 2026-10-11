@@ -59,6 +59,9 @@ pub(super) struct WasmModuleEmitter {
     /// (module, local) pairs some closure assigns: each lives in an 8-byte memory cell so the
     /// closure and its enclosing function share one binding.
     pub(super) boxed_locals: std::collections::BTreeSet<(usize, LocalId)>,
+    /// Functions whose last parameter is `...rest`: wasm func index -> declared params before it
+    /// (not counting `this`). Callers pack the remaining arguments into one array (PRD-582).
+    pub(super) rest_funcs: BTreeMap<u32, u32>,
     /// Async function names (compiled to JS, not WASM)
     pub(super) async_func_imports: Vec<(String, u32, usize)>, // (name, import_idx, param_count)
     /// Generated JS code for async functions
@@ -126,6 +129,7 @@ impl WasmModuleEmitter {
             nan_temp_global: 0, // set during compile()
             box_heap_global: 0, // set during compile()
             boxed_locals: Default::default(),
+            rest_funcs: Default::default(),
             async_func_imports: Vec::new(),
             module_func_maps: Vec::new(),
             void_funcs: std::collections::BTreeSet::new(),
