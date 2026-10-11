@@ -228,8 +228,21 @@ impl<'a> FuncEmitCtx<'a> {
                         return true;
                     }
                     "Map" => {
+                        if let Some(arg) = args.first() {
+                            self.emit_frame_begin(func, 1);
+                            self.emit_store_arg(func, 0, arg);
+                            self.emit_memcall(func, "map_new_from_array", 1);
+                        } else {
+                            self.emit_frame_begin(func, 0);
+                            self.emit_memcall(func, "map_new", 0);
+                        }
+                        return true;
+                    }
+                    // ponytail: the iterable argument is ignored; add it when a program seeds one.
+                    "WeakMap" | "WeakSet" => {
                         self.emit_frame_begin(func, 0);
-                        self.emit_memcall(func, "map_new", 0);
+                        let bridge = if class_name == "WeakMap" { "weakmap_new" } else { "weakset_new" };
+                        self.emit_memcall(func, bridge, 0);
                         return true;
                     }
                     "Set" => {
@@ -325,9 +338,16 @@ impl<'a> FuncEmitCtx<'a> {
                 }
             }
             Expr::This => {
-                // A closure carries `this` as a capture; methods get it as parameter 0.
-                let idx = self.local_map.get(&THIS_CAPTURE).copied().unwrap_or(0);
-                func.instruction(&Instruction::LocalGet(idx));
+                // An arrow carries `this` as a capture; another closure reads the call's receiver;
+                // methods get it as parameter 0.
+                if let Some(&idx) = self.local_map.get(&THIS_CAPTURE) {
+                    func.instruction(&Instruction::LocalGet(idx));
+                } else if self.in_closure {
+                    self.emit_frame_begin(func, 0);
+                    self.emit_memcall(func, "current_this", 0);
+                } else {
+                    func.instruction(&Instruction::LocalGet(0));
+                }
             }
             Expr::SuperCall(args) => {
                 // Call parent constructor: super(args)

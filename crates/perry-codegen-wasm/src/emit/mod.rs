@@ -98,6 +98,18 @@ fn with_implicit_constructors(
     modules: &[(String, perry_hir::ir::Module)],
 ) -> Vec<(String, perry_hir::ir::Module)> {
     let mut modules = modules.to_vec();
+    // A computed method (`[Symbol.iterator]() {}`) lives in `computed_members`; compile it as an
+    // ordinary method so RegisterClassComputedMethod finds it under its internal name.
+    for (_, module) in &mut modules {
+        for class in &mut module.classes {
+            for member in &class.computed_members {
+                if matches!(member.kind, perry_hir::ir::ClassComputedMemberKind::Method) {
+                    let list = if member.is_static { &mut class.static_methods } else { &mut class.methods };
+                    list.push(member.function.clone());
+                }
+            }
+        }
+    }
     let mut arity: BTreeMap<String, usize> = modules
         .iter()
         .flat_map(|(_, m)| &m.classes)

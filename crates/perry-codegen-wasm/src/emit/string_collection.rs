@@ -270,6 +270,18 @@ impl WasmModuleEmitter {
             "get_iterator",
             "class_ref",
             "for_of_next",
+            "current_this",
+            "symbol_for",
+            "symbol_new",
+            "map_new_from_array",
+            "weakmap_new",
+            "weakset_new",
+            "map_entry_key_at",
+            "map_entry_value_at",
+            "set_value_at",
+            "array_flat_map",
+            "json_stringify_full",
+            "js_object_has_own",
             "async_step_chain",
             "async_step_done",
             "crypto_random_uuidv7",
@@ -1086,6 +1098,9 @@ impl WasmModuleEmitter {
                 self.collect_strings_in_expr(url);
                 self.collect_strings_in_expr(auth_header);
                 self.collect_strings_in_expr(body);
+            }
+            Expr::ExternFuncRef { name, .. } if name.starts_with("js_") => {
+                self.intern_string(name);
             }
             // Every other kind: descend through the exhaustive HIR walker, so a literal under an
             // expression this match does not list is still interned (PRD-582: async-step

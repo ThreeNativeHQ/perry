@@ -20,6 +20,8 @@ pub(super) struct FuncEmitCtx<'a> {
     /// Pending label to attach to the next loop encountered.
     /// Boxed locals whose cell a `PreallocateBoxes` already made; their `Let` stores into it.
     pub(super) preallocated: std::collections::BTreeSet<LocalId>,
+    /// A closure without a captured `this` reads the call's receiver (current_this).
+    pub(super) in_closure: bool,
     pub(super) pending_label: Option<String>,
     /// Current class name (set when compiling class methods/constructors)
     pub(super) current_class: Option<String>,
@@ -57,6 +59,7 @@ impl<'a> FuncEmitCtx<'a> {
             label_stack: Vec::new(),
             pending_label: None,
             preallocated: Default::default(),
+            in_closure: false,
             current_class: None,
             temp_local,
             temp_local_i32,

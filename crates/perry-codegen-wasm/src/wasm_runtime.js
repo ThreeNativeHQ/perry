@@ -1931,7 +1931,7 @@ const __memDispatch = {
   class_set_method: (classId, methodName, funcIdx) => {
     const cls = String(classId);
     if (!classMethodTable[cls]) classMethodTable[cls] = {};
-    classMethodTable[cls][String(methodName)] = funcIdx | 0;
+    classMethodTable[cls][typeof methodName === 'symbol' ? methodName : String(methodName)] = funcIdx | 0;
   },
   class_call_method: (obj, methodNameId, argsArr) => {
     // methodNameId is a plain number (string table index), not a decoded JS value
@@ -2141,7 +2141,63 @@ const __memDispatch = {
   current_step_closure: () => __currentStep,
   global_this: () => globalThis,
   for_of_next: (it) => __classDispatch(it, 'next', []),
-  get_iterator: (v) => v != null && typeof v[Symbol.iterator] === 'function' ? v[Symbol.iterator]() : v,
+  current_this: () => __callThis,
+  // HIR spells a well-known symbol as Symbol.for("@@__perry_wk_<name>").
+  symbol_for: (key) => String(key).startsWith('@@__perry_wk_') ? Symbol[String(key).slice(13)] : Symbol.for(key),
+  symbol_new: (description) => Symbol(description),
+  js_to_property_key: (k) => typeof k === 'symbol' ? k : String(k),
+  get_iterator: (v) => {
+    if (v != null && typeof v[Symbol.iterator] === 'function') return v[Symbol.iterator]();
+    // A Perry class instance keeps [Symbol.iterator] in the class method table.
+    if (v && v.__class__) { const it = __classDispatch(v, Symbol.iterator, []); if (it !== undefined) return it; }
+    return v;
+  },
+  map_new_from_array: (arr) => new Map(Array.isArray(arr) ? arr : []),
+  weakmap_new: () => new WeakMap(),
+  weakset_new: () => new WeakSet(),
+  map_entry_key_at: (m, i) => __keysAt(m)[i],
+  map_entry_value_at: (m, i) => m.get(__keysAt(m)[i]),
+  set_value_at: (s, i) => __keysAt(s)[i],
+  array_flat_map: (arr, cb) => Array.isArray(arr) ? arr.flatMap(__hostCallback(cb)) : [],
+  json_stringify_full: (v, replacer, space) => JSON.stringify(v, __hostCallback(replacer) ?? undefined, space),
+  // Runtime helpers named like perry-runtime's C ABI; the emitter routes a `js_*` extern call
+  // here when this table defines it (PRD-582).
+  js_map_find_key_index: (m, k) => __keysAt(m).findIndex((x) => x === k || (x !== x && k !== k)),
+  js_set_find_value_index: (s, v) => __keysAt(s).findIndex((x) => x === v || (x !== x && v !== v)),
+  js_weakmap_get: (m, k) => m.get(k),
+  js_weakmap_set: (m, k, v) => m.set(k, v),
+  js_weakmap_has: (m, k) => m.has(k),
+  js_weakmap_delete: (m, k) => m.delete(k),
+  js_weakset_add: (s, v) => s.add(v),
+  js_weakset_has: (s, v) => s.has(v),
+  js_weakset_delete: (s, v) => s.delete(v),
+  js_object_assign_one: (t, s) => {
+    if (typeof s === 'string') return Object.assign(t, s);
+    if (s != null && typeof s === 'object') for (const k of Object.keys(s)) if (k !== '__class__') t[k] = s[k];
+    return t;
+  },
+  js_object_has_own: (o, k) => o != null && Object.hasOwn(Object(o), k),
+  js_object_literal_to_property_key: (k) => typeof k === 'symbol' ? k : String(k),
+  js_object_literal_set_computed: (o, k, v) => { o[k] = v; return v; },
+  js_object_literal_infer_computed_function_name: (k, v) => v,
+  js_object_set_method_by_name: (o, k, fn) => { o[k] = fn; return o; },
+  js_object_define_accessor: (o, k, getter, setter) => {
+    const d = Object.getOwnPropertyDescriptor(o, k) || { enumerable: true, configurable: true };
+    if (getter !== undefined) d.get = function () { return __callWithThis(this, getter, []); };
+    if (setter !== undefined) d.set = function (v) { __callWithThis(this, setter, [v]); };
+    delete d.value; delete d.writable;
+    Object.defineProperty(o, k, d);
+    return o;
+  },
+  js_iterator_result_validate: (r) => {
+    if (r === null || (typeof r !== 'object' && typeof r !== 'function')) throw new TypeError('Iterator result ' + r + ' is not an object');
+    return r;
+  },
+  js_global_get_optional: (name) => globalThis[name],
+  js_global_get_or_throw_unresolved: (name) => {
+    if (!(name in globalThis)) throw new ReferenceError(name + ' is not defined');
+    return globalThis[name];
+  },
   async_first_call: (step) => __runStep(step, undefined, false),
   async_step_chain: (value, step) => Promise.resolve(value).then(
     (v) => __runStep(step, v, false),
@@ -4899,6 +4955,25 @@ const __uiMethodMap = {
   addOverlay: "perry_ui_widget_add_overlay",
 };
 
+// Index access for the Map/Set for-of fast path: the key list is rebuilt when the size changes.
+// ponytail: a delete plus an insert that keeps the size reuses a stale list; keep a version
+// counter per collection if a program does that mid-loop.
+const __keyLists = new WeakMap();
+function __keysAt(c) {
+  let e = __keyLists.get(c);
+  if (!e || e.size !== c.size) { e = { size: c.size, keys: [...c.keys()] }; __keyLists.set(c, e); }
+  return e.keys;
+}
+
+// `this` for a non-arrow closure is the call's receiver: method calls and accessors set it,
+// and the closure reads it through current_this (PRD-582).
+let __callThis;
+function __callWithThis(receiver, closure, args) {
+  const saved = __callThis;
+  __callThis = receiver;
+  try { return callWasmClosure(closure, ...args); } finally { __callThis = saved; }
+}
+
 function __hostCallback(v) {
   return v && typeof v === 'object' && typeof v.funcIdx !== 'undefined'
     ? (...args) => callWasmClosure(v, ...args)
@@ -4946,7 +5021,7 @@ function __classDispatch(objVal, mname, rawArgs) {
     // A host method (Promise#then, Map#forEach, ...) gets Perry closures as JS functions.
     if (typeof field === 'function') return field.apply(objVal, rawArgs.map(__hostCallback));
     if (field && typeof field === 'object' && typeof field.funcIdx !== 'undefined') {
-      return callWasmClosure(field, ...rawArgs);
+      return __callWithThis(objVal, field, rawArgs);
     }
   }
   // 2) Try UI widget/state method dispatch

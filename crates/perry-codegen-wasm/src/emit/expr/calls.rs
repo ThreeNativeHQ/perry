@@ -216,6 +216,15 @@ impl<'a> FuncEmitCtx<'a> {
                             {
                                 // An imported `const` function (three/tsl's `vec3`): call the value.
                                 self.emit_dynamic_call(func, callee, args);
+                            } else if name.starts_with("js_")
+                                && crate::WASM_RUNTIME_JS.contains(&format!("\n  {name}: ("))
+                            {
+                                // A perry-runtime helper with a same-named bridge in wasm_runtime.js.
+                                self.emit_frame_begin(func, args.len() as u32);
+                                for (i, arg) in args.iter().enumerate() {
+                                    self.emit_store_arg(func, i as u32, arg);
+                                }
+                                self.emit_memcall(func, name, args.len() as u32);
                             } else {
                                 *self.emitter.unsupported.borrow_mut()
                                     .entry(format!("UnresolvedExtern({name})")).or_default() += 1;
@@ -260,6 +269,15 @@ impl<'a> FuncEmitCtx<'a> {
         self.emit_memcall(func, name, args.len() as u32 + 1);
     }
 
+    /// Store `args` in a fresh frame and call one runtime bridge.
+    fn emit_bridge(&mut self, func: &mut Function, bridge: &str, args: &[&Box<Expr>]) {
+        self.emit_frame_begin(func, args.len() as u32);
+        for (i, arg) in args.iter().enumerate() {
+            self.emit_store_arg(func, i as u32, arg);
+        }
+        self.emit_memcall(func, bridge, args.len() as u32);
+    }
+
     /// console.log/warn/error: one argument goes straight through; any other count prints one
     /// space-joined line from an args array, as the host console does (PRD-582).
     pub(super) fn emit_console(&mut self, func: &mut Function, level: &str, args: &[Expr]) {
@@ -286,6 +304,51 @@ impl<'a> FuncEmitCtx<'a> {
             Expr::ArrayIterationPatched => {
                 func.instruction(&Instruction::I64Const(TAG_FALSE as i64));
             }
+            Expr::MapEntryKeyAt { map, idx } => self.emit_bridge(func, "map_entry_key_at", &[map, idx]),
+            Expr::MapEntryValueAt { map, idx } => self.emit_bridge(func, "map_entry_value_at", &[map, idx]),
+            Expr::SetValueAt { set, idx } => self.emit_bridge(func, "set_value_at", &[set, idx]),
+            Expr::ArrayFlatMap { array, callback } => self.emit_bridge(func, "array_flat_map", &[array, callback]),
+            Expr::ObjectHasOwn(object, key) => self.emit_bridge(func, "js_object_has_own", &[object, key]),
+            Expr::JsonStringifyFull(value, replacer, space) => {
+                self.emit_bridge(func, "json_stringify_full", &[value, replacer, space])
+            }
+            Expr::ArraySome { array, callback } | Expr::ArrayEvery { array, callback } => {
+                let bridge = if matches!(expr, Expr::ArraySome { .. }) { "array_some" } else { "array_every" };
+                self.emit_frame_begin(func, 2);
+                self.emit_store_arg(func, 0, array);
+                self.emit_store_arg(func, 1, callback);
+                self.emit_memcall_i32(func, bridge, 2);
+                func.instruction(&Instruction::If(wasm_encoder::BlockType::Result(ValType::I64)));
+                func.instruction(&Instruction::I64Const(TAG_TRUE as i64));
+                func.instruction(&Instruction::Else);
+                func.instruction(&Instruction::I64Const(TAG_FALSE as i64));
+                func.instruction(&Instruction::End);
+            }
+            Expr::RegisterClassComputedMethod { class_name, key_expr, method_name, is_static, .. } => {
+                let methods = if *is_static { &self.emitter.class_static_map } else { &self.emitter.class_method_map };
+                let table_idx = methods
+                    .get(class_name)
+                    .and_then(|m| m.get(method_name))
+                    .map(|f| self.emitter.func_to_table_idx.get(f).copied().unwrap_or(*f));
+                let Some(table_idx) = table_idx else {
+                    *self.emitter.unsupported.borrow_mut()
+                        .entry("RegisterClassComputedMethod".into()).or_default() += 1;
+                    func.instruction(&Instruction::I64Const(TAG_UNDEFINED as i64));
+                    return true;
+                };
+                let class_id = self.emitter.string_map.get(class_name.as_str()).copied().unwrap_or(0);
+                self.emit_frame_begin(func, 3);
+                self.emit_store_const(func, 0, f64::from_bits((STRING_TAG << 48) | class_id as u64));
+                self.emit_store_arg(func, 1, key_expr);
+                self.emit_store_const(func, 2, table_idx as f64);
+                self.emit_memcall_void(func, "class_set_method", 3);
+                func.instruction(&Instruction::I64Const(TAG_UNDEFINED as i64));
+            }
+            Expr::SymbolFor(key) => self.emit_bridge(func, "symbol_for", &[key]),
+            Expr::SymbolNew(description) => match description {
+                Some(d) => self.emit_bridge(func, "symbol_new", &[d]),
+                None => self.emit_bridge(func, "symbol_new", &[]),
+            },
             Expr::GetIterator(value) => {
                 self.emit_frame_begin(func, 1);
                 self.emit_store_arg(func, 0, value);

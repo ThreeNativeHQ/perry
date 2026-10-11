@@ -13,7 +13,7 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use perry_hir::ir::Module;
 
 /// Embedded WASM runtime JavaScript (bridge between WASM and browser APIs)
-const WASM_RUNTIME_JS: &str = include_str!("wasm_runtime.js");
+pub(crate) const WASM_RUNTIME_JS: &str = include_str!("wasm_runtime.js");
 
 /// Compile multiple HIR modules into a self-contained HTML file with embedded WASM.
 pub fn compile_modules_to_wasm_html(
@@ -215,7 +215,7 @@ mod tests {
         "array_values", "array_with", "date_set_date", "date_set_full_year", "date_set_hours",
         "date_set_milliseconds", "date_set_minutes", "date_set_month", "date_set_seconds",
         "date_set_time", "date_to_utc_string", "finreg_new", "finreg_register", "finreg_unregister",
-        "map_new_from_array", "path_delimiter", "path_format", "path_matches_glob", "path_normalize",
+"path_delimiter", "path_format", "path_matches_glob", "path_normalize",
         "path_parse", "path_relative", "path_resolve_join", "path_sep", "path_to_namespaced_path",
         "path_win32_join", "string_char_code_at", "weakref_deref", "weakref_new",
     ];

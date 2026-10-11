@@ -104,6 +104,7 @@ impl WasmModuleEmitter {
         let mut func = Function::new(locals);
 
         let mut ctx = FuncEmitCtx::new(self, &local_map, temp_local_idx, temp_i32_idx);
+        ctx.in_closure = true;
         ctx.emit_box_params(&mut func, params);
         let _has_ret = body.iter().any(has_return);
 
