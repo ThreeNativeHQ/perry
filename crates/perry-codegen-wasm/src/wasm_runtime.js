@@ -1639,7 +1639,8 @@ const __memDispatch = {
   string_eq: (a, b) => a === b ? 1 : 0,
   string_len: (val) => {
     if (typeof val === 'string') return val.length;
-    if (Array.isArray(val)) return val.length;
+    // Any object answers its own length: arrays, typed arrays, functions, {length} records.
+    if (val !== null && (typeof val === 'object' || typeof val === 'function')) return val.length;
     return 0;
   },
   jsvalue_to_string: (val) => String(val),
@@ -1746,7 +1747,7 @@ const __memDispatch = {
     return arr[typeof index === 'number' ? index : index];
   },
   array_set: (arr, index, value) => { if (Array.isArray(arr)) arr[typeof index === 'number' ? index : index] = value; },
-  array_length: (arr) => Array.isArray(arr) ? arr.length : 0,
+  array_length: (arr) => Array.isArray(arr) || ArrayBuffer.isView(arr) ? arr.length : 0,
   array_slice: (arr, start, end) => {
     if (!Array.isArray(arr)) return [];
     const s = typeof start === 'number' ? start : 0;
@@ -2165,6 +2166,39 @@ const __memDispatch = {
   global_this: () => globalThis,
   for_of_next: (it) => __classDispatch(it, 'next', []),
   current_this: () => __callThis,
+  typed_array_new: (name, arg) => new globalThis[name](arg),
+  call_spread: (callee, args) => {
+    if (typeof callee === 'function') return callee(...args.map(__hostCallback));
+    return callWasmClosure(callee, ...args);
+  },
+  call_method_spread: (obj, name, args) => __classDispatch(obj, name, args),
+  performance_now: () => performance.now(),
+  math_log: (x) => Math.log(x),
+  math_max_spread: (xs) => Math.max(...xs),
+  math_min_spread: (xs) => Math.min(...xs),
+  object_define_property: (o, k, d) => {
+    const desc = { ...d };
+    if (d.get !== undefined) desc.get = function () { return __callWithThis(this, d.get, []); };
+    if (d.set !== undefined) desc.set = function (v) { __callWithThis(this, d.set, [v]); };
+    return Object.defineProperty(o, k, desc);
+  },
+  object_get_own_property_descriptor: (o, k) => Object.getOwnPropertyDescriptor(o, k),
+  object_freeze: (o) => Object.freeze(o),
+  object_is_frozen: (o) => Object.isFrozen(o),
+  object_get_prototype_of: (o) => Object.getPrototypeOf(o),
+  object_from_entries: (e) => Object.fromEntries(e),
+  for_in_keys: (o) => {
+    const keys = [];
+    for (const k in o) if (k !== '__class__' && !k.startsWith('__perry_cap_')) keys.push(k);
+    return keys;
+  },
+  reflect_get: (t, k, r) => Reflect.get(t, k, r),
+  reflect_delete: (t, k) => Reflect.deleteProperty(t, k),
+  // `class C extends <expr>`: a class value names its parent; a host parent is ignored.
+  // ponytail: extending a host class (Error, Array) keeps no host behaviour.
+  class_set_parent_dynamic: (cls, parent) => {
+    if (parent && parent.__perryClass) classParentTable[String(cls)] = parent.__perryClass;
+  },
   class_captures_set: (cls, values) => { __classCaptures[String(cls)] = values; },
   class_capture_value: (cls, i, fallback, preferFallback) => {
     const snapshot = __classCaptures[String(cls)]?.[i];

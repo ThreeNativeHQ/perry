@@ -398,6 +398,71 @@ impl<'a> FuncEmitCtx<'a> {
                 }
                 self.emit_expr(func, &class_ref);
             }
+            Expr::TypedArrayNew { kind, arg } => {
+                const NAMES: [&str; 12] = [
+                    "Int8Array", "Uint8Array", "Uint8ClampedArray", "Int16Array", "Uint16Array",
+                    "Int32Array", "Uint32Array", "Float16Array", "Float32Array", "Float64Array",
+                    "BigInt64Array", "BigUint64Array",
+                ];
+                let name = NAMES
+                    .iter()
+                    .find(|n| perry_hir::ir::typed_array_kind_for_name(n) == Some(*kind))
+                    .copied()
+                    .unwrap_or("Float64Array");
+                let name = Expr::String(name.to_string());
+                let arg = arg.clone().unwrap_or_else(|| Box::new(Expr::Undefined));
+                self.emit_bridge(func, "typed_array_new", &[&Box::new(name), &arg]);
+            }
+            Expr::CallSpread { callee, args, .. } => {
+                let elements = args
+                    .iter()
+                    .map(|a| match a {
+                        perry_hir::ir::CallArg::Expr(e) => perry_hir::ir::ArrayElement::Expr(e.clone()),
+                        perry_hir::ir::CallArg::Spread(e) => perry_hir::ir::ArrayElement::Spread(e.clone()),
+                    })
+                    .collect();
+                let args = Box::new(Expr::ArraySpread(elements));
+                match callee.as_ref() {
+                    // `obj.m(...xs)` keeps its receiver.
+                    Expr::PropertyGet { object, property, .. } => {
+                        let name = Box::new(Expr::String(property.clone()));
+                        self.emit_bridge(func, "call_method_spread", &[object, &name, &args]);
+                    }
+                    _ => self.emit_bridge(func, "call_spread", &[callee, &args]),
+                }
+            }
+            Expr::PerformanceNow => self.emit_bridge(func, "performance_now", &[]),
+            Expr::MathLog(x) => self.emit_bridge(func, "math_log", &[x]),
+            Expr::MathMaxSpread(xs) => self.emit_bridge(func, "math_max_spread", &[xs]),
+            Expr::MathMinSpread(xs) => self.emit_bridge(func, "math_min_spread", &[xs]),
+            Expr::ObjectDefineProperty(o, k, d) => self.emit_bridge(func, "object_define_property", &[o, k, d]),
+            Expr::ObjectGetOwnPropertyDescriptor(o, k) => {
+                self.emit_bridge(func, "object_get_own_property_descriptor", &[o, k])
+            }
+            Expr::ObjectFreeze(o) => self.emit_bridge(func, "object_freeze", &[o]),
+            Expr::ObjectIsFrozen(o) => self.emit_bridge(func, "object_is_frozen", &[o]),
+            Expr::ObjectGetPrototypeOf(o) => self.emit_bridge(func, "object_get_prototype_of", &[o]),
+            Expr::ObjectFromEntries(e) => self.emit_bridge(func, "object_from_entries", &[e]),
+            Expr::ForInKeys(o) => self.emit_bridge(func, "for_in_keys", &[o]),
+            Expr::ReflectGet { target, key, receiver } => self.emit_bridge(func, "reflect_get", &[target, key, receiver]),
+            Expr::ReflectDelete { target, key } => self.emit_bridge(func, "reflect_delete", &[target, key]),
+            Expr::BooleanCoerce(v) => {
+                self.emit_frame_begin(func, 1);
+                self.emit_store_arg(func, 0, v);
+                self.emit_memcall_i32(func, "is_truthy", 1);
+                func.instruction(&Instruction::If(wasm_encoder::BlockType::Result(ValType::I64)));
+                func.instruction(&Instruction::I64Const(TAG_TRUE as i64));
+                func.instruction(&Instruction::Else);
+                func.instruction(&Instruction::I64Const(TAG_FALSE as i64));
+                func.instruction(&Instruction::End);
+            }
+            Expr::RegisterClassParentDynamic { class_name, parent_expr } => {
+                let class_id = self.emitter.string_map.get(class_name.as_str()).copied().unwrap_or(0);
+                self.emit_frame_begin(func, 2);
+                self.emit_store_const(func, 0, f64::from_bits((STRING_TAG << 48) | class_id as u64));
+                self.emit_store_arg(func, 1, parent_expr);
+                self.emit_memcall(func, "class_set_parent_dynamic", 2);
+            }
             Expr::SymbolFor(key) => self.emit_bridge(func, "symbol_for", &[key]),
             Expr::SymbolNew(description) => match description {
                 Some(d) => self.emit_bridge(func, "symbol_new", &[d]),
