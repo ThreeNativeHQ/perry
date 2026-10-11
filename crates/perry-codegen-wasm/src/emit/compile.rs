@@ -1493,6 +1493,36 @@ impl WasmModuleEmitter {
                         }
                     }
 
+                    // Register the constructor and static methods by table index, for `new` and
+                    // static calls on a class value (PRD-582).
+                    let table = |idx: u32| (self.func_to_table_idx.get(&idx).copied().unwrap_or(idx) as f64).to_bits();
+                    let mut registrations: Vec<(&str, Vec<u64>)> = Vec::new();
+                    if let Some(&ctor_idx) = self.class_ctor_map.get(&class.name) {
+                        registrations.push(("class_set_ctor", vec![class_bits, table(ctor_idx)]));
+                    }
+                    for (name, &idx) in self.class_static_map.get(&class.name).into_iter().flatten() {
+                        let name_id = self.string_map.get(name.as_str()).copied().unwrap_or(0);
+                        let name_bits = (STRING_TAG << 48) | name_id as u64;
+                        registrations.push(("class_set_static_method", vec![class_bits, name_bits, table(idx)]));
+                    }
+                    for (bridge, args) in registrations {
+                        for (i, bits) in args.iter().enumerate() {
+                            func.instruction(&Instruction::I32Const(0xFF00 + 8 * i as i32));
+                            func.instruction(&Instruction::I64Const(*bits as i64));
+                            func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
+                                offset: 0,
+                                align: 3,
+                                memory_index: 0,
+                            }));
+                        }
+                        let id = self.string_map.get(bridge).copied().unwrap_or(0);
+                        func.instruction(&f64_const(id as f64));
+                        func.instruction(&f64_const(args.len() as f64));
+                        func.instruction(&Instruction::I32Const(0xFF00));
+                        func.instruction(&Instruction::Call(rt.mem_call));
+                        func.instruction(&Instruction::Drop);
+                    }
+
                     // Set up inheritance
                     if let Some(parent_name) = &class.extends_name {
                         let parent_name_id = self

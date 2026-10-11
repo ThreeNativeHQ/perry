@@ -269,8 +269,13 @@ impl WasmModuleEmitter {
             "global_this",
             "get_iterator",
             "class_ref",
+            "class_set_ctor",
+            "class_set_static_method",
+            "new_dynamic",
             "for_of_next",
             "current_this",
+            "class_captures_set",
+            "class_capture_value",
             "symbol_for",
             "symbol_new",
             "map_new_from_array",
@@ -1098,6 +1103,13 @@ impl WasmModuleEmitter {
                 self.collect_strings_in_expr(url);
                 self.collect_strings_in_expr(auth_header);
                 self.collect_strings_in_expr(body);
+            }
+            Expr::ClassExprFresh { template, named_statics, .. } => {
+                self.intern_string(template);
+                for (name, _) in named_statics {
+                    self.intern_string(name);
+                }
+                perry_hir::walker::walk_expr_children(expr, &mut |child| self.collect_strings_in_expr(child));
             }
             Expr::ExternFuncRef { name, .. } if name.starts_with("js_") => {
                 self.intern_string(name);

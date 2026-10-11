@@ -269,6 +269,15 @@ impl<'a> FuncEmitCtx<'a> {
         self.emit_memcall(func, name, args.len() as u32 + 1);
     }
 
+    /// Record a class's decl-site capture snapshot; leaves `undefined` on the stack.
+    fn emit_class_captures_set(&mut self, func: &mut Function, class_name: &str, captures: &[Expr]) {
+        let class_id = self.emitter.string_map.get(class_name).copied().unwrap_or(0);
+        self.emit_frame_begin(func, 2);
+        self.emit_store_const(func, 0, f64::from_bits((STRING_TAG << 48) | class_id as u64));
+        self.emit_store_arg(func, 1, &Expr::Array(captures.to_vec()));
+        self.emit_memcall(func, "class_captures_set", 2);
+    }
+
     /// Store `args` in a fresh frame and call one runtime bridge.
     fn emit_bridge(&mut self, func: &mut Function, bridge: &str, args: &[&Box<Expr>]) {
         self.emit_frame_begin(func, args.len() as u32);
@@ -343,6 +352,51 @@ impl<'a> FuncEmitCtx<'a> {
                 self.emit_store_const(func, 2, table_idx as f64);
                 self.emit_memcall_void(func, "class_set_method", 3);
                 func.instruction(&Instruction::I64Const(TAG_UNDEFINED as i64));
+            }
+            // Function-nested classes: the decl-site snapshot of captured outer locals.
+            Expr::RegisterClassCaptures { class_name, captures } => {
+                self.emit_class_captures_set(func, class_name, captures);
+            }
+            Expr::ClassCaptureValue { class_name, index, fallback, prefer_fallback } => {
+                let class_id = self.emitter.string_map.get(class_name.as_str()).copied().unwrap_or(0);
+                self.emit_frame_begin(func, 4);
+                self.emit_store_const(func, 0, f64::from_bits((STRING_TAG << 48) | class_id as u64));
+                self.emit_store_const(func, 1, *index as f64);
+                match fallback {
+                    Some(f) => self.emit_store_arg(func, 2, f),
+                    None => self.emit_store_arg(func, 2, &Expr::Undefined),
+                }
+                self.emit_store_const(func, 3, if *prefer_fallback { 1.0 } else { 0.0 });
+                self.emit_memcall(func, "class_capture_value", 4);
+            }
+            // A class evaluated inside a function: its value is the template's statics object.
+            // ponytail: one statics object per template, not per evaluation, and computed static
+            // keys are reported, not run; give each evaluation its own object when a factory
+            // returns two classes from one template.
+            Expr::ClassExprFresh { template, evaluation_owner, named_statics, computed_keys, computed_statics, captured_args, .. } => {
+                let class_ref = Expr::ClassRef(template.clone());
+                if let Some(owner) = evaluation_owner {
+                    self.emit_expr(func, &Expr::LocalSet(*owner, Box::new(class_ref.clone())));
+                    func.instruction(&Instruction::Drop);
+                }
+                if !captured_args.is_empty() {
+                    self.emit_class_captures_set(func, template, captured_args);
+                    func.instruction(&Instruction::Drop);
+                }
+                let class_id = self.emitter.string_map.get(template.as_str()).copied().unwrap_or(0);
+                for (name, value) in named_statics {
+                    let name_id = self.emitter.string_map.get(name.as_str()).copied().unwrap_or(0);
+                    self.emit_frame_begin(func, 3);
+                    self.emit_store_const(func, 0, f64::from_bits((STRING_TAG << 48) | class_id as u64));
+                    self.emit_store_const(func, 1, f64::from_bits((STRING_TAG << 48) | name_id as u64));
+                    self.emit_store_arg(func, 2, value);
+                    self.emit_memcall_void(func, "class_set_static", 3);
+                }
+                if !computed_keys.is_empty() || !computed_statics.is_empty() {
+                    *self.emitter.unsupported.borrow_mut()
+                        .entry("ClassExprFreshComputed".into()).or_default() += 1;
+                }
+                self.emit_expr(func, &class_ref);
             }
             Expr::SymbolFor(key) => self.emit_bridge(func, "symbol_for", &[key]),
             Expr::SymbolNew(description) => match description {

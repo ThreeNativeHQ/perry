@@ -2037,7 +2037,30 @@ const __memDispatch = {
     if (!classStaticTable[cls]) classStaticTable[cls] = {};
     classStaticTable[cls][String(name)] = value;
   },
-  class_ref: (classId) => classStaticTable[String(classId)] ??= {},
+  class_ref: (classId) => {
+    const cls = String(classId);
+    const statics = classStaticTable[cls] ??= {};
+    if (!statics.__perryClass) Object.defineProperty(statics, '__perryClass', { value: cls });
+    return statics;
+  },
+  class_set_ctor: (classId, tableIdx) => { __classCtors[String(classId)] = tableIdx | 0; },
+  class_set_static_method: (classId, name, tableIdx) => {
+    (__classStaticMethods[String(classId)] ??= {})[String(name)] = tableIdx | 0;
+  },
+  new_dynamic: (callee, args) => {
+    const argv = Array.isArray(args) ? args : [];
+    const cls = callee && callee.__perryClass;
+    if (cls) {
+      const instance = { __class__: cls };
+      const idx = __classCtors[cls];
+      const fn = idx === undefined ? undefined : wasmInstance.exports.__indirect_function_table.get(idx);
+      if (fn) fn(__jsValueToBits(instance), ...__padBigintArgs(fn, 1, argv.map((v) => __jsValueToBits(v))));
+      return instance;
+    }
+    if (typeof callee === 'function') return new callee(...argv.map(__hostCallback));
+    if (callee && typeof callee.funcIdx !== 'undefined') return callWasmClosure(callee, ...argv);
+    throw new TypeError(String(callee) + ' is not a constructor');
+  },
   class_get_static: (classId, name) => {
     const cls = String(classId); const statics = classStaticTable[cls];
     if (!statics) return undefined;
@@ -2142,6 +2165,12 @@ const __memDispatch = {
   global_this: () => globalThis,
   for_of_next: (it) => __classDispatch(it, 'next', []),
   current_this: () => __callThis,
+  class_captures_set: (cls, values) => { __classCaptures[String(cls)] = values; },
+  class_capture_value: (cls, i, fallback, preferFallback) => {
+    const snapshot = __classCaptures[String(cls)]?.[i];
+    if (preferFallback) return fallback !== undefined ? fallback : snapshot;
+    return snapshot !== undefined ? snapshot : fallback;
+  },
   // HIR spells a well-known symbol as Symbol.for("@@__perry_wk_<name>").
   symbol_for: (key) => String(key).startsWith('@@__perry_wk_') ? Symbol[String(key).slice(13)] : Symbol.for(key),
   symbol_new: (description) => Symbol(description),
@@ -4968,6 +4997,9 @@ function __keysAt(c) {
 // `this` for a non-arrow closure is the call's receiver: method calls and accessors set it,
 // and the closure reads it through current_this (PRD-582).
 let __callThis;
+const __classCaptures = {};
+const __classCtors = {};
+const __classStaticMethods = {};
 function __callWithThis(receiver, closure, args) {
   const saved = __callThis;
   __callThis = receiver;
@@ -5013,6 +5045,16 @@ function __classDispatch(objVal, mname, rawArgs) {
         }
       }
       cls = classParentTable[cls] || null;
+    }
+  }
+  // 1a) A static method on a class value (`Kind.create(1)` where Kind is a nested class).
+  if (objVal && objVal.__perryClass) {
+    for (let c = objVal.__perryClass; c; c = classParentTable[c] || null) {
+      const table = __classStaticMethods[c];
+      if (table && mname in table) {
+        const fn = wasmInstance.exports.__indirect_function_table.get(table[mname]);
+        return __bitsToJsValue(fn(...__padBigintArgs(fn, 0, rawArgs.map((v) => __jsValueToBits(v)))));
+      }
     }
   }
   // 1b) A field that holds a Perry closure or a host function: `obj.fn(...)`, `Promise.resolve(v)`.
