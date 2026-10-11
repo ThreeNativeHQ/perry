@@ -127,6 +127,13 @@ panic = "abort"
 strip = true          # Strip symbols automatically
 opt-level = 3         # Maximum optimization
 
+# Compiler development only; game runtime/stdlib archives still use release.
+[profile.fastc]
+inherits = "release"
+codegen-units = 16
+incremental = true
+lto = false
+
 # For the runtime/stdlib static libraries
 [profile.release.package.perry-runtime]
 opt-level = 3
