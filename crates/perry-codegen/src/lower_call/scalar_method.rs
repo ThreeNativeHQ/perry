@@ -682,7 +682,12 @@ fn emit_materialized_scalar_receiver_typed_shape_init(
     let typed_layout = ctx
         .class_init_chains
         .get(class_name)
-        .map(|chain| crate::typed_shape::class_typed_layout_from_chain(chain))
+        .map(|chain| {
+            crate::typed_shape::class_typed_layout_from_chain(
+                chain,
+                ctx.class_field_counts.get(class_name).copied(),
+            )
+        })
         .unwrap_or_else(|| crate::typed_shape::class_typed_layout(ctx.classes, class_name));
     let slot_count_str = typed_layout.slot_count.to_string();
     let raw_mask_word_count_str = typed_layout.raw_f64_mask_words.len().to_string();

@@ -47,6 +47,8 @@ pub(crate) fn classify_direct_callee(name: &str) -> GcCallEffect {
         // use Rust Vec/TLS registries, but never allocates in Perry's heap or
         // invokes JavaScript getters, proxies, coercions, or callbacks.
         | "js_param_type_guard"
+        // Exact headers/immutable shape and private-evaluation metadata only; no allocation or JS.
+        | "js_private_slot_admit"
         | "js_is_truthy"
         | "js_typed_feedback_plain_array_index_get_guard"
         | "js_typed_feedback_numeric_array_index_get_guard"

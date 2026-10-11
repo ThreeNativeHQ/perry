@@ -920,6 +920,8 @@ pub(crate) struct CrossModuleCtx {
     /// instead of recomputing via the name-keyed `ctx.classes` walk (which
     /// mis-resolves same-named cross-module parents like effect's `Type`).
     pub class_field_counts: std::collections::HashMap<String, u32>,
+    pub class_private_slots:
+        std::collections::HashMap<String, Vec<crate::typed_shape::PrivateFieldSlot>>,
     /// Issue #26 / #321: authoritative, source-prefix-disambiguated ancestor
     /// chain per class (root → leaf, `(class_name, fields)`), matching the
     /// keys-global layout. `apply_field_initializers_recursive` walks this

@@ -171,7 +171,7 @@ pub(crate) fn class_chain_layout_declarable_at_allocation(
             return false;
         };
         for field in &class.fields {
-            if field.key_expr.is_some() {
+            if field.key_expr.is_some() || field.is_private {
                 continue;
             }
             if type_is_pointer_bearing(&field.ty) {
@@ -202,7 +202,7 @@ pub(crate) fn class_layout_declarable_at_allocation(
     // `POINTER_FREE` from `layout_init_pointer_free`. Nothing to unlock.
     let mut worth_declaring = false;
     for field in &class.fields {
-        if field.key_expr.is_some() {
+        if field.key_expr.is_some() || field.is_private {
             continue;
         }
         if type_is_pointer_bearing(&field.ty) {
@@ -268,7 +268,12 @@ pub(crate) fn class_typed_layout(
     }
     chain.reverse();
 
-    typed_layout_from_fields(chain.iter().flat_map(|class| class.fields.iter()))
+    let mut layout = typed_layout_from_fields(chain.iter().flat_map(|class| class.fields.iter()));
+    layout.slot_count += chain
+        .iter()
+        .filter(|class| class.has_private_instance_brand())
+        .count() as u32;
+    layout
 }
 
 /// Issue #26 / #321 (refs #5094): typed layout from an authoritative,
@@ -287,8 +292,14 @@ pub(crate) fn class_typed_layout(
 /// instances actually get.
 pub(crate) fn class_typed_layout_from_chain(
     chain: &[(String, Vec<perry_hir::ClassField>)],
+    logical_slot_count: Option<u32>,
 ) -> TypedShapeLayout {
-    typed_layout_from_fields(chain.iter().flat_map(|(_, fields)| fields.iter()))
+    let mut layout = typed_layout_from_fields(chain.iter().flat_map(|(_, fields)| fields.iter()));
+    // Method/accessor brand markers are tagged non-pointers after field pairs.
+    if let Some(count) = logical_slot_count.filter(|count| *count >= layout.slot_count) {
+        layout.slot_count = count;
+    }
+    layout
 }
 
 fn typed_layout_from_fields<'a>(
@@ -297,7 +308,9 @@ fn typed_layout_from_fields<'a>(
     let mut raw_f64_mask_words = Vec::new();
     let mut pointer_mask_words = Vec::new();
     let mut slot_count = 0u32;
-    for field in fields {
+    let fields: Vec<_> = fields.collect();
+    let private_count = fields.iter().filter(|field| field.is_private).count();
+    for field in &fields {
         // Computed fields and private fields are initialized through runtime
         // storage, not the public inline slots represented by this descriptor.
         // Keep the mask indices in lockstep with the packed class keys.
@@ -319,6 +332,18 @@ fn typed_layout_from_fields<'a>(
             }
             pointer_mask_words[word] |= 1u64 << (slot % 64);
         }
+        slot_count += 1;
+    }
+
+    // Hidden presence/value pairs follow every public slot; values stay tagged.
+    for _ in 0..private_count {
+        slot_count += 1;
+        let slot = slot_count as usize;
+        let word = slot / 64;
+        if pointer_mask_words.len() <= word {
+            pointer_mask_words.resize(word + 1, 0);
+        }
+        pointer_mask_words[word] |= 1u64 << (slot % 64);
         slot_count += 1;
     }
 
@@ -433,4 +458,65 @@ pub(crate) fn ensure_class_shape_slot(
     ctx.class_shape_slots
         .insert(class_name.to_string(), slot.clone());
     slot
+}
+
+/// One exact declaring identity and its tagged presence/value pair.
+#[derive(Clone, Debug)]
+pub(crate) struct PrivateFieldSlot {
+    pub(crate) declaring_class_id: u32,
+    pub(crate) field_name: String,
+    pub(crate) presence_slot: u32,
+}
+
+pub fn private_field_metadata_name(class_id: u32, field_name: &str) -> String {
+    format!("#<perry:private-field:{class_id}:{field_name}>")
+}
+
+pub(crate) fn decode_private_field_metadata(name: &str) -> Option<(u32, &str)> {
+    let (id, field) = name
+        .strip_prefix("#<perry:private-field:")?
+        .strip_suffix('>')?
+        .split_once(':')?;
+    let id = id.parse::<u32>().ok()?;
+    (id != 0 && field.starts_with('#')).then_some((id, field))
+}
+
+pub(crate) fn append_private_field_keys(
+    packed_keys: &mut String,
+    fields: impl IntoIterator<Item = (u32, String)>,
+    public_count: u32,
+) -> Vec<PrivateFieldSlot> {
+    let mut slots = Vec::new();
+    for (declaring_class_id, field_name) in fields.into_iter().filter(|(id, _)| *id != 0) {
+        let presence_slot = public_count + slots.len() as u32 * 2;
+        packed_keys.push_str(&private_field_metadata_name(
+            declaring_class_id,
+            &field_name,
+        ));
+        packed_keys.push('\0');
+        packed_keys.push_str(&format!(
+            "#<perry:private-value:{declaring_class_id}:{field_name}>"
+        ));
+        packed_keys.push('\0');
+        slots.push(PrivateFieldSlot {
+            declaring_class_id,
+            field_name,
+            presence_slot,
+        });
+    }
+    slots
+}
+
+/// Private methods/accessors share one existing declaring-class brand marker.
+pub(crate) fn append_private_brand_keys(
+    packed: &mut String,
+    ids: impl Iterator<Item = u32>,
+) -> u32 {
+    let mut count = 0;
+    for id in ids.filter(|id| *id != 0) {
+        packed.push_str(&format!("#<perry:private-brand:{}>", id));
+        packed.push('\0');
+        count += 1;
+    }
+    count
 }

@@ -176,10 +176,12 @@ fn emit_instance_alloc_inner(
     let public_keyable_count = |fields: &[perry_hir::ClassField]| -> u32 {
         fields
             .iter()
-            .filter(|field| field.key_expr.is_none() && !field.is_private)
-            .count() as u32
+            .filter(|field| field.key_expr.is_none())
+            .map(|field| if field.is_private { 2 } else { 1 })
+            .sum::<u32>()
     };
-    let mut field_count = public_keyable_count(&class.fields);
+    let mut field_count =
+        public_keyable_count(&class.fields) + u32::from(class.has_private_instance_brand());
     // Imported classes now carry their real field_names from the source
     // module. If the field count is still 0 (no fields info available),
     // use a generous default as a safety net.
@@ -189,7 +191,8 @@ fn emit_instance_alloc_inner(
     let mut parent = class.extends_name.as_deref();
     while let Some(parent_name) = parent {
         if let Some(p) = ctx.classes.get(parent_name).copied() {
-            field_count += public_keyable_count(&p.fields);
+            field_count +=
+                public_keyable_count(&p.fields) + u32::from(p.has_private_instance_brand());
             parent = p.extends_name.as_deref();
         } else {
             break;
@@ -318,6 +321,20 @@ fn emit_instance_alloc_inner(
             packed_keys.push_str(&f.name);
             packed_keys.push('\0');
         }
+        let public_count = packed_keys.bytes().filter(|byte| *byte == 0).count() as u32;
+        crate::typed_shape::append_private_field_keys(
+            &mut packed_keys,
+            class
+                .fields
+                .iter()
+                .filter(|f| f.is_private)
+                .map(|f| (class.id, f.name.clone())),
+            public_count,
+        );
+        crate::typed_shape::append_private_brand_keys(
+            &mut packed_keys,
+            std::iter::once(class.id).filter(|_| class.has_private_instance_brand()),
+        );
         let keys_idx = ctx.strings.intern(&packed_keys);
         let keys_entry = ctx.strings.entry(keys_idx);
         let keys_global = format!("@{}", keys_entry.bytes_global);
@@ -713,6 +730,33 @@ fn emit_instance_alloc_inner(
             packed_keys.push_str(&f.name);
             packed_keys.push('\0');
         }
+        let public_count = packed_keys.bytes().filter(|byte| *byte == 0).count() as u32;
+        let private_fields = parent_chain
+            .iter()
+            .rev()
+            .copied()
+            .chain(std::iter::once(class))
+            .flat_map(|c| {
+                c.fields
+                    .iter()
+                    .filter(|f| f.is_private)
+                    .map(move |f| (c.id, f.name.clone()))
+            });
+        crate::typed_shape::append_private_field_keys(
+            &mut packed_keys,
+            private_fields,
+            public_count,
+        );
+        crate::typed_shape::append_private_brand_keys(
+            &mut packed_keys,
+            parent_chain
+                .iter()
+                .rev()
+                .copied()
+                .chain(std::iter::once(class))
+                .filter(|c| c.has_private_instance_brand())
+                .map(|c| c.id),
+        );
         let keys_idx = ctx.strings.intern(&packed_keys);
         let keys_entry = ctx.strings.entry(keys_idx);
         let keys_global = format!("@{}", keys_entry.bytes_global);

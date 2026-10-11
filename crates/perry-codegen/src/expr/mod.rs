@@ -553,6 +553,8 @@ pub(crate) struct FnCtx<'a> {
     /// walk, which mis-resolves same-named cross-module parents (effect's
     /// `Type` in SchemaAST.ts vs ParseResult.ts).
     pub class_field_counts: &'a std::collections::HashMap<String, u32>,
+    pub class_private_slots:
+        &'a std::collections::HashMap<String, Vec<crate::typed_shape::PrivateFieldSlot>>,
     /// Issue #26 / #321: authoritative root→leaf ancestor chain per class
     /// (prefix-disambiguated). `apply_field_initializers_recursive` uses this
     /// to write the correct inherited fields instead of walking the name-keyed
@@ -2810,6 +2812,7 @@ mod misc_methods;
 mod new_dynamic;
 mod objects_arrays_lit;
 mod os_uri_dates;
+mod private_field;
 pub(crate) mod property_get;
 pub(crate) mod property_set;
 pub(crate) mod proxy_reflect;

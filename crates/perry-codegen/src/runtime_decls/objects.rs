@@ -634,6 +634,16 @@ pub fn declare_phase_b_objects(module: &mut LlModule) {
     );
     module.declare_function("js_net_socket_set_encoding", I64, &[I64, I64]);
 
+    module.declare_function(
+        "js_private_slot_admit",
+        I64,
+        &[DOUBLE, DOUBLE, I32, I32, I32, I32],
+    );
+    module.declare_function(
+        "js_private_field_set_by_property_id",
+        "void",
+        &[DOUBLE, I64, DOUBLE],
+    );
     declare_stdlib_ffi(module);
     declare_stdlib_ffi_part2(module);
 }

@@ -277,7 +277,12 @@ pub(crate) fn class_field_store_layout_note_is_conforming(
     let layout = ctx
         .class_init_chains
         .get(class_name)
-        .map(|chain| crate::typed_shape::class_typed_layout_from_chain(chain))
+        .map(|chain| {
+            crate::typed_shape::class_typed_layout_from_chain(
+                chain,
+                ctx.class_field_counts.get(class_name).copied(),
+            )
+        })
         .unwrap_or_else(|| crate::typed_shape::class_typed_layout(ctx.classes, class_name));
     crate::typed_shape::layout_declares_pointer_slot(&layout, field_index)
 }

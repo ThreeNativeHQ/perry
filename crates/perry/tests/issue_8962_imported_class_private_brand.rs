@@ -29,7 +29,10 @@ fn perry_bin() -> PathBuf {
 /// output on any failure.
 fn compile_and_run(files: &[(&str, &str)], entry: &str) -> String {
     let dir = tempfile::tempdir().expect("tempdir");
-    let root = dir.path();
+    let root = dir.path().to_path_buf();
+    if std::env::var_os("PERRY_KEEP_TEST_ARTIFACTS").is_some() {
+        let _ = dir.keep();
+    }
     for (name, source) in files {
         let path = root.join(name);
         if let Some(parent) = path.parent() {
@@ -40,7 +43,7 @@ fn compile_and_run(files: &[(&str, &str)], entry: &str) -> String {
     let entry_path = root.join(entry);
     let output = root.join("main_bin");
     let compile = Command::new(perry_bin())
-        .current_dir(root)
+        .current_dir(&root)
         .arg("compile")
         .arg(&entry_path)
         .arg("-o")
@@ -240,7 +243,10 @@ console.log(make().call());
 #[test]
 fn genuine_double_initialization_still_throws() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let root = dir.path();
+    let root = dir.path().to_path_buf();
+    if std::env::var_os("PERRY_KEEP_TEST_ARTIFACTS").is_some() {
+        let _ = dir.keep();
+    }
     std::fs::write(
         root.join("main.ts"),
         r#"const recycled: any = {};
@@ -259,7 +265,7 @@ console.log("no throw");
     .expect("write entry");
     let output = root.join("main_bin");
     let compile = Command::new(perry_bin())
-        .current_dir(root)
+        .current_dir(&root)
         .arg("compile")
         .arg(root.join("main.ts"))
         .arg("-o")
@@ -280,5 +286,48 @@ console.log("no throw");
         "expected the second construction to throw the duplicate-brand \
          TypeError\nstatus: {:?}\nstdout:\n{stdout}\nstderr:\n{stderr}",
         run.status.code()
+    );
+}
+
+#[test]
+fn imported_private_slots_keep_public_offsets_and_same_named_declaring_ids() {
+    let stdout = compile_and_run(
+        &[
+            (
+                "a.ts",
+                r#"export class Box {
+            #x = 3; publicA = 5;
+            #identity(n: number) { return n; }
+            get #current() { return this.#x; }
+            read() { return this.#identity(this.#current); }
+            write(n: number) { this.#x = n; }
+        }
+        export function own() { return new Box(); }"#,
+            ),
+            (
+                "b.ts",
+                r#"export class Box {
+            publicB = 7; #x = 11;
+            read() { return this.#x; }
+        }"#,
+            ),
+            (
+                "main.ts",
+                r#"import { Box as A, own } from './a';
+        import { Box as B } from './b';
+        class Child extends A { child = 13; #x = 17; own() { return this.#x; } }
+        const fromSource = own(); const fromImport = new A(); const other = new B();
+        const child = new Child();
+        console.log(fromSource.read(), fromImport.read(), other.read(), child.read(), child.own());
+        console.log(fromSource.publicA, fromImport.publicA, other.publicB, child.publicA, child.child);
+        console.log(Object.keys(fromSource).join(','), Object.keys(fromImport).join(','), Object.keys(child).join(','));
+        Object.freeze(fromImport); fromImport.write(19); console.log(fromImport.read());"#,
+            ),
+        ],
+        "main.ts",
+    );
+    assert_eq!(
+        stdout,
+        "3 3 11 3 17\n5 5 7 5 13\npublicA publicA publicA,child\n19"
     );
 }

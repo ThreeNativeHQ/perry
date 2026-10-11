@@ -1189,7 +1189,30 @@ pub(crate) fn lower(ctx: &mut FnCtx<'_>, expr: &Expr) -> Result<String> {
                 ctx.class_ids.get(class_name).copied().unwrap_or(0)
             };
             let key_label = emit_string_literal_global(ctx, field_name);
-            Ok(ctx.block().call(
+            let fast_admission = if *kind == 0 && !*is_static {
+                super::private_field::admit(
+                    ctx,
+                    class_name,
+                    class_id,
+                    field_name,
+                    object,
+                    &obj,
+                    &brand_owner,
+                )
+            } else {
+                None
+            };
+            let branch = fast_admission.map(|(handle, _)| {
+                let slow = ctx.new_block("private_brand_check.slow");
+                let fast = ctx.new_block("private_brand_check.fast");
+                let merge = ctx.new_block("private_brand_check.merge");
+                let (slow_label, fast_label) = (ctx.block_label(slow), ctx.block_label(fast));
+                let miss = ctx.block().icmp_eq(I64, &handle, "0");
+                ctx.block().cond_br(&miss, &slow_label, &fast_label);
+                ctx.current_block = slow;
+                (fast, merge)
+            });
+            let fallback = ctx.block().call(
                 DOUBLE,
                 "js_private_brand_check",
                 &[
@@ -1201,7 +1224,25 @@ pub(crate) fn lower(ctx: &mut FnCtx<'_>, expr: &Expr) -> Result<String> {
                     (I32, &kind.to_string()),
                     (I32, if *is_static { "1" } else { "0" }),
                 ],
-            ))
+            );
+            if let Some((fast, merge)) = branch {
+                let slow_pred = ctx.block_label(ctx.current_block);
+                let merge_label = ctx.block_label(merge);
+                ctx.block().br(&merge_label);
+                ctx.current_block = fast;
+                let true_value = ctx
+                    .block()
+                    .bitcast_i64_to_double(crate::nanbox::TAG_TRUE_I64);
+                let fast_pred = ctx.block_label(ctx.current_block);
+                ctx.block().br(&merge_label);
+                ctx.current_block = merge;
+                Ok(ctx.block().phi(
+                    DOUBLE,
+                    &[(&fallback, &slow_pred), (&true_value, &fast_pred)],
+                ))
+            } else {
+                Ok(fallback)
+            }
         }
         Expr::PrivateGuard {
             class_name,
@@ -1212,6 +1253,9 @@ pub(crate) fn lower(ctx: &mut FnCtx<'_>, expr: &Expr) -> Result<String> {
             receiver_is_brand_owner,
             object,
         } => {
+            if let Some(receiver) = super::private_field::guard(ctx, expr)? {
+                return Ok(receiver);
+            }
             // Evaluate the receiver once, brand+kind check it, and return it
             // unchanged (or throw TypeError). The enclosing PropertyGet /
             // PropertySet / method-call lowering then operates on the result.

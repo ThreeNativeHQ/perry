@@ -112,6 +112,7 @@ pub(super) fn layout_at_allocation(
         ctx.classes,
         ctx.class_keys_globals,
         ctx.class_init_chains,
+        ctx.class_field_counts,
         class_name,
         field_count,
     )
@@ -126,6 +127,7 @@ pub(crate) fn layout_at_allocation_in(
         String,
         Vec<(String, Vec<perry_hir::ClassField>)>,
     >,
+    class_field_counts: &std::collections::HashMap<String, u32>,
     class_name: &str,
     field_count: u32,
 ) -> crate::target_layout::InlineTypedLayout {
@@ -134,9 +136,13 @@ pub(crate) fn layout_at_allocation_in(
     if !layout_declared_at_allocation_in(classes, class_keys_globals, class_name) {
         return InlineTypedLayout::None;
     }
-    let Some(typed_layout) =
-        resolve_typed_layout_in(classes, class_keys_globals, class_init_chains, class_name)
-    else {
+    let Some(typed_layout) = resolve_typed_layout_in(
+        classes,
+        class_keys_globals,
+        class_init_chains,
+        class_field_counts,
+        class_name,
+    ) else {
         return InlineTypedLayout::None;
     };
     if typed_layout.slot_count != field_count {
@@ -285,6 +291,7 @@ fn resolve_typed_layout(
         ctx.classes,
         ctx.class_keys_globals,
         ctx.class_init_chains,
+        ctx.class_field_counts,
         class_name,
     )
 }
@@ -296,13 +303,19 @@ fn resolve_typed_layout_in(
         String,
         Vec<(String, Vec<perry_hir::ClassField>)>,
     >,
+    class_field_counts: &std::collections::HashMap<String, u32>,
     class_name: &str,
 ) -> Option<crate::typed_shape::TypedShapeLayout> {
     class_keys_globals.get(class_name)?;
     Some(
         class_init_chains
             .get(class_name)
-            .map(|chain| crate::typed_shape::class_typed_layout_from_chain(chain))
+            .map(|chain| {
+                crate::typed_shape::class_typed_layout_from_chain(
+                    chain,
+                    class_field_counts.get(class_name).copied(),
+                )
+            })
             .unwrap_or_else(|| crate::typed_shape::class_typed_layout(classes, class_name)),
     )
 }

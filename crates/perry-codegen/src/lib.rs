@@ -240,3 +240,5 @@ pub fn cjs_wrap_create_require_local() -> &'static str {
 pub fn module_is_cjs_wrapped(hir: &perry_hir::Module) -> bool {
     collectors::is_cjs_wrapped_module(hir)
 }
+
+pub use typed_shape::private_field_metadata_name;

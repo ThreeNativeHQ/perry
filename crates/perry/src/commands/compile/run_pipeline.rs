@@ -374,7 +374,13 @@ fn imported_class_from_hir(
             .fields
             .iter()
             .filter(|field| field.key_expr.is_none())
-            .map(|field| field.name.clone())
+            .map(|field| {
+                if field.is_private {
+                    perry_codegen::private_field_metadata_name(class.id, &field.name)
+                } else {
+                    field.name.clone()
+                }
+            })
             .collect(),
         field_types: class
             .fields

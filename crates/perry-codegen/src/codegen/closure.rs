@@ -1122,6 +1122,7 @@ pub(super) fn compile_closure(
         class_ids,
         class_keys_globals: &cross_module.class_keys_globals,
         class_field_counts: &cross_module.class_field_counts,
+        class_private_slots: &cross_module.class_private_slots,
         class_init_chains: &cross_module.class_init_chains,
         class_header_image_globals: &cross_module.class_header_images,
         imported_class_ctors: &cross_module.imported_class_ctors,

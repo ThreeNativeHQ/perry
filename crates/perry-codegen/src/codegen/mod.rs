@@ -638,11 +638,14 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
                     ic.field_names
                         .iter()
                         .map(|name| perry_hir::ClassField {
-                            name: name.clone(),
+                            name: crate::typed_shape::decode_private_field_metadata(name)
+                                .map(|(_, name)| name.to_string())
+                                .unwrap_or_else(|| name.clone()),
                             key_expr: None,
                             ty: perry_hir::types::Type::Any,
                             init: None,
-                            is_private: false,
+                            is_private: crate::typed_shape::decode_private_field_metadata(name)
+                                .is_some(),
                             is_readonly: false,
                             decorators: Vec::new(),
                         })
@@ -740,7 +743,9 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
                 .iter()
                 .enumerate()
                 .map(|(i, name)| perry_hir::ClassField {
-                    name: name.clone(),
+                    name: crate::typed_shape::decode_private_field_metadata(name)
+                        .map(|(_, name)| name.to_string())
+                        .unwrap_or_else(|| name.clone()),
                     key_expr: None,
                     // Use the real declared type when the source-side
                     // populated `field_types`; fall back to `Any` otherwise.
@@ -753,7 +758,7 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
                         .cloned()
                         .unwrap_or(perry_hir::types::Type::Any),
                     init: None,
-                    is_private: false,
+                    is_private: crate::typed_shape::decode_private_field_metadata(name).is_some(),
                     is_readonly: false,
                     decorators: Vec::new(),
                 })
@@ -1098,9 +1103,39 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
     // parents for OTHER imports). Returns `(fields, extends_name, source_prefix)`.
     // `child_prefix = None` (or no same-prefix hit) falls back to the first
     // by-name match — the legacy behavior.
+    let mut class_private_slots_map = std::collections::HashMap::new();
+    let shadowed_id = |name: &str, prefix: &str| {
+        opts.imported_classes
+            .iter()
+            .find(|ic| ic.effective_name() == name && ic.source_prefix == prefix)
+            .and_then(|ic| {
+                ic.source_class_id.or_else(|| {
+                    ic.field_names.iter().find_map(|name| {
+                        crate::typed_shape::decode_private_field_metadata(name).map(|(id, _)| id)
+                    })
+                })
+            })
+            .unwrap_or(0)
+    };
+    let has_private_brand = |id: u32| {
+        id != 0
+            && (hir
+                .classes
+                .iter()
+                .any(|class| class.id == id && class.has_private_instance_brand())
+                || opts.imported_classes.iter().any(|ic| {
+                    shadowed_id(&ic.effective_name(), &ic.source_prefix) == id
+                        && ic
+                            .method_names
+                            .iter()
+                            .chain(&ic.getter_names)
+                            .chain(&ic.setter_names)
+                            .any(|name| name.starts_with('#'))
+                }))
+    };
     let resolve_parent = |parent_name: &str,
                           child_prefix: Option<&str>|
-     -> Option<(Vec<perry_hir::ClassField>, Option<String>, String)> {
+     -> Option<(Vec<perry_hir::ClassField>, Option<String>, String, u32)> {
         // Same-prefix preference over the live stubs.
         if let Some(cp) = child_prefix {
             if let Some(i) = imported_class_stubs
@@ -1113,6 +1148,7 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
                     s.fields.clone(),
                     s.extends_name.clone(),
                     imported_stub_prefixes[i].clone(),
+                    shadowed_id(&s.name, &imported_stub_prefixes[i]),
                 ));
             }
             // Same-prefix preference over the shadowed list.
@@ -1120,7 +1156,12 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
                 .iter()
                 .find(|(n, p, _, _)| n == parent_name && p == cp)
             {
-                return Some((fields.clone(), ext.clone(), p.clone()));
+                return Some((
+                    fields.clone(),
+                    ext.clone(),
+                    p.clone(),
+                    shadowed_id(parent_name, p),
+                ));
             }
         }
         // Fallback: first by-name match in the live stubs.
@@ -1133,6 +1174,7 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
                 s.fields.clone(),
                 s.extends_name.clone(),
                 imported_stub_prefixes[i].clone(),
+                shadowed_id(&s.name, &imported_stub_prefixes[i]),
             ));
         }
         // Last resort: a shadowed import by name (still better than picking the
@@ -1140,7 +1182,14 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
         shadowed_parent_stubs
             .iter()
             .find(|(n, _, _, _)| n == parent_name)
-            .map(|(_, p, ext, fields)| (fields.clone(), ext.clone(), p.clone()))
+            .map(|(_, p, ext, fields)| {
+                (
+                    fields.clone(),
+                    ext.clone(),
+                    p.clone(),
+                    shadowed_id(parent_name, p),
+                )
+            })
     };
 
     // Distinct source class names can `sanitize()` to the SAME symbol — e.g.
@@ -1242,50 +1291,68 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
         // (they're defined in THIS module). Returns the resolved parent's
         // `(fields, extends_name, source_prefix)` so the next hop can keep
         // disambiguating in the right module's scope.
-        let lookup_class_chain_link =
-            |name: &str,
-             child_prefix: Option<&str>|
-             -> Option<(Vec<perry_hir::ClassField>, Option<String>, Option<String>)> {
-                // Issue #26: if the child belongs to THIS module (child_prefix ==
-                // module_prefix, the common case for a local class's own ancestor
-                // chain), prefer the LOCAL same-named class — that's what its
-                // `extends` clause refers to. Only fall back to the local class
-                // for a cross-module child when no source-matched import exists.
-                let child_is_local = child_prefix
-                    .map(|cp| cp == module_prefix.as_str())
-                    .unwrap_or(true);
-                if child_is_local {
-                    if let Some(parent) = hir.classes.iter().find(|cls| cls.name == name) {
-                        return Some((
-                            parent.fields.clone(),
-                            parent.extends_name.clone(),
-                            Some(module_prefix.clone()),
-                        ));
-                    }
-                }
-                if let Some((fields, ext, prefix)) = resolve_parent(name, child_prefix) {
-                    return Some((fields, ext, Some(prefix)));
-                }
-                // Cross-module child with no source-matched import: last resort is
-                // any local same-named class.
+        let lookup_class_chain_link = |name: &str,
+                                       child_prefix: Option<&str>|
+         -> Option<(
+            Vec<perry_hir::ClassField>,
+            Option<String>,
+            Option<String>,
+            u32,
+        )> {
+            // Issue #26: if the child belongs to THIS module (child_prefix ==
+            // module_prefix, the common case for a local class's own ancestor
+            // chain), prefer the LOCAL same-named class — that's what its
+            // `extends` clause refers to. Only fall back to the local class
+            // for a cross-module child when no source-matched import exists.
+            let child_is_local = child_prefix
+                .map(|cp| cp == module_prefix.as_str())
+                .unwrap_or(true);
+            if child_is_local {
                 if let Some(parent) = hir.classes.iter().find(|cls| cls.name == name) {
                     return Some((
                         parent.fields.clone(),
                         parent.extends_name.clone(),
                         Some(module_prefix.clone()),
+                        parent.id,
                     ));
                 }
-                None
-            };
+            }
+            if let Some((fields, ext, prefix, cid)) = resolve_parent(name, child_prefix) {
+                return Some((fields, ext, Some(prefix), cid));
+            }
+            // Cross-module child with no source-matched import: last resort is
+            // any local same-named class.
+            if let Some(parent) = hir.classes.iter().find(|cls| cls.name == name) {
+                return Some((
+                    parent.fields.clone(),
+                    parent.extends_name.clone(),
+                    Some(module_prefix.clone()),
+                    parent.id,
+                ));
+            }
+            None
+        };
+        let mut parent_private_fields: Vec<Vec<(u32, String)>> = Vec::new();
+        let mut parent_private_brands = Vec::new();
         let mut p = c.extends_name.clone();
         // The child here is a local class `c`, so its `extends` resolves in
         // this module's scope first.
         let mut child_prefix: Option<String> = Some(module_prefix.clone());
         while let Some(parent_name) = p {
-            if let Some((parent_fields, parent_extends, resolved_prefix)) =
+            if let Some((parent_fields, parent_extends, resolved_prefix, declaring_id)) =
                 lookup_class_chain_link(&parent_name, child_prefix.as_deref())
             {
                 let parent_fields: Vec<_> = parent_fields.into_iter().filter(keep_field).collect();
+                if has_private_brand(declaring_id) {
+                    parent_private_brands.push(declaring_id);
+                }
+                parent_private_fields.push(
+                    parent_fields
+                        .iter()
+                        .filter(|f| f.is_private)
+                        .map(|f| (declaring_id, f.name.clone()))
+                        .collect(),
+                );
                 parent_chain.push((parent_name.clone(), parent_fields.clone()));
                 total_field_count += count_keyable(&parent_fields);
                 p = parent_extends;
@@ -1312,6 +1379,32 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
             }
             packed_keys.push_str(&f.name);
             packed_keys.push('\0');
+        }
+        let private_fields = parent_private_fields.iter().rev().flatten().cloned().chain(
+            own_fields
+                .iter()
+                .filter(|f| f.is_private)
+                .map(|f| (c.id, f.name.clone())),
+        );
+        let private_slots = crate::typed_shape::append_private_field_keys(
+            &mut packed_keys,
+            private_fields,
+            total_field_count,
+        );
+        total_field_count += private_slots.len() as u32 * 2;
+        total_field_count += crate::typed_shape::append_private_brand_keys(
+            &mut packed_keys,
+            parent_private_brands
+                .iter()
+                .rev()
+                .copied()
+                .chain(std::iter::once(c.id).filter(|id| has_private_brand(*id))),
+        );
+        class_private_slots_map.insert(c.name.clone(), private_slots.clone());
+        for alias in &c.aliases {
+            class_private_slots_map
+                .entry(alias.clone())
+                .or_insert_with(|| private_slots.clone());
         }
         class_keys_globals_map.insert(c.name.clone(), global_name.clone());
         // Issue #26: record the authoritative root→leaf init chain. `parent_chain`
@@ -1345,7 +1438,8 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
         // bits stay aligned with the actual slot layout when same-named
         // cross-module parents exist (the name-keyed `class_typed_layout`
         // walk picks whichever stub won the bare-name race).
-        let typed_layout = crate::typed_shape::class_typed_layout_from_chain(&chain);
+        let typed_layout =
+            crate::typed_shape::class_typed_layout_from_chain(&chain, Some(total_field_count));
         class_field_counts_map.insert(c.name.clone(), total_field_count);
         for alias in &c.aliases {
             class_field_counts_map
@@ -1449,6 +1543,8 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
         // prefix and follows the resolved parent's prefix at each hop, since
         // each class's `extends` resolves in its own module's scope.
         let mut parent_chain: Vec<(String, Vec<perry_hir::ClassField>)> = Vec::new();
+        let mut parent_private_fields: Vec<Vec<(u32, String)>> = Vec::new();
+        let mut parent_private_brands = Vec::new();
         let mut p = c.extends_name.clone();
         let mut child_prefix: Option<String> = Some(imported_stub_prefixes[c_idx].clone());
         while let Some(parent_name) = p {
@@ -1456,10 +1552,20 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
             // disambiguated, including locally-shadowed imports), so a same-
             // named LOCAL class does NOT hijack an imported chain (effect's
             // ParseResult.ts local `Type` vs SchemaAST's `Type`). Refs #26.
-            if let Some((parent_fields, parent_extends, parent_prefix)) =
+            if let Some((parent_fields, parent_extends, parent_prefix, declaring_id)) =
                 resolve_parent(&parent_name, child_prefix.as_deref())
             {
                 let parent_fields: Vec<_> = parent_fields.into_iter().filter(keep_field).collect();
+                if has_private_brand(declaring_id) {
+                    parent_private_brands.push(declaring_id);
+                }
+                parent_private_fields.push(
+                    parent_fields
+                        .iter()
+                        .filter(|f| f.is_private)
+                        .map(|f| (declaring_id, f.name.clone()))
+                        .collect(),
+                );
                 parent_chain.push((parent_name.clone(), parent_fields.clone()));
                 total_field_count += keyable_count(&parent_fields);
                 p = parent_extends;
@@ -1472,6 +1578,16 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
                     .cloned()
                     .collect();
                 total_field_count += keyable_count(&parent_fields);
+                if parent.has_private_instance_brand() {
+                    parent_private_brands.push(parent.id);
+                }
+                parent_private_fields.push(
+                    parent_fields
+                        .iter()
+                        .filter(|f| f.is_private)
+                        .map(|f| (parent.id, f.name.clone()))
+                        .collect(),
+                );
                 parent_chain.push((parent_name.clone(), parent_fields));
                 p = parent.extends_name.clone();
                 child_prefix = Some(module_prefix.clone());
@@ -1495,6 +1611,30 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
             packed_keys.push_str(&f.name);
             packed_keys.push('\0');
         }
+        let private_fields = parent_private_fields.iter().rev().flatten().cloned().chain(
+            own_fields.iter().filter(|f| f.is_private).map(|f| {
+                (
+                    shadowed_id(&c.name, &imported_stub_prefixes[c_idx]),
+                    f.name.clone(),
+                )
+            }),
+        );
+        let private_slots = crate::typed_shape::append_private_field_keys(
+            &mut packed_keys,
+            private_fields,
+            total_field_count,
+        );
+        total_field_count += private_slots.len() as u32 * 2;
+        total_field_count += crate::typed_shape::append_private_brand_keys(
+            &mut packed_keys,
+            parent_private_brands.iter().rev().copied().chain(
+                std::iter::once(shadowed_id(&c.name, &imported_stub_prefixes[c_idx]))
+                    .filter(|id| has_private_brand(*id)),
+            ),
+        );
+        class_private_slots_map
+            .entry(c.name.clone())
+            .or_insert(private_slots);
         class_field_counts_map
             .entry(c.name.clone())
             .or_insert(total_field_count);
@@ -1508,7 +1648,8 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
             let mut chain: Vec<(String, Vec<perry_hir::ClassField>)> =
                 parent_chain.iter().rev().cloned().collect();
             chain.push((c.name.clone(), own_fields.clone()));
-            let typed_layout = crate::typed_shape::class_typed_layout_from_chain(&chain);
+            let typed_layout =
+                crate::typed_shape::class_typed_layout_from_chain(&chain, Some(total_field_count));
             class_init_chains_map.entry(c.name.clone()).or_insert(chain);
             typed_layout
         };
@@ -2369,6 +2510,7 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
                     &class_table,
                     &class_keys_globals_map,
                     &class_init_chains_map,
+                    &class_field_counts_map,
                     class_name,
                     field_count,
                 )
@@ -2495,6 +2637,7 @@ pub fn compile_module(hir: &HirModule, opts: CompileOptions) -> Result<Vec<u8>> 
         method_arguments_length_only,
         class_keys_globals: class_keys_globals_map,
         class_field_counts: class_field_counts_map,
+        class_private_slots: class_private_slots_map,
         class_init_chains: class_init_chains_map,
         class_header_images: class_header_images_map,
         imported_class_ctors: opts

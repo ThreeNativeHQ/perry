@@ -1206,7 +1206,15 @@ pub extern "C" fn js_private_brand_add(obj: f64, declaring_class_id: u32) -> f64
     let key = scope.root_string_ptr(key);
     object.with_mut_ptr::<ObjectHeader, _>(|object| {
         key.with_const_ptr::<crate::StringHeader, _>(|key| {
-            js_object_set_field_by_name(object, key, f64::from_bits(crate::value::TAG_TRUE));
+            if !unsafe {
+                super::super::try_initialize_existing_own_data(
+                    object,
+                    key,
+                    f64::from_bits(crate::value::TAG_TRUE),
+                )
+            } {
+                js_object_set_field_by_name(object, key, f64::from_bits(crate::value::TAG_TRUE));
+            }
         });
     });
     obj
@@ -1267,12 +1275,32 @@ pub extern "C" fn js_private_field_add(
     let marker_key = scope.root_string_ptr(marker_key);
     object.with_mut_ptr::<ObjectHeader, _>(|object| {
         storage_key.with_const_ptr::<crate::StringHeader, _>(|storage_key| {
-            js_object_set_field_by_name(object, storage_key, value.get_nanbox_f64());
+            if !unsafe {
+                super::super::try_initialize_existing_own_data(
+                    object,
+                    storage_key,
+                    value.get_nanbox_f64(),
+                )
+            } {
+                js_object_set_field_by_name(object, storage_key, value.get_nanbox_f64());
+            }
         });
     });
     object.with_mut_ptr::<ObjectHeader, _>(|object| {
         marker_key.with_const_ptr::<crate::StringHeader, _>(|marker_key| {
-            js_object_set_field_by_name(object, marker_key, f64::from_bits(crate::value::TAG_TRUE));
+            if !unsafe {
+                super::super::try_initialize_existing_own_data(
+                    object,
+                    marker_key,
+                    f64::from_bits(crate::value::TAG_TRUE),
+                )
+            } {
+                js_object_set_field_by_name(
+                    object,
+                    marker_key,
+                    f64::from_bits(crate::value::TAG_TRUE),
+                );
+            }
         });
     });
     value.get_nanbox_f64()
@@ -1448,6 +1476,199 @@ pub extern "C" fn js_private_guard(
 #[cfg(test)]
 mod private_evaluation_brand_tests {
     use super::*;
+
+    #[test]
+    fn fallback_class_allocation_leaves_private_slots_absent() {
+        unsafe {
+            const CID: u32 = 62_444;
+            let packed =
+                b"public\0#<perry:private-field:62444:#x>\0#<perry:private-value:62444:#x>\0";
+            let object = crate::object::js_object_alloc_class_with_keys(
+                CID,
+                0,
+                3,
+                packed.as_ptr(),
+                packed.len() as u32,
+            );
+            let fields =
+                (object as *const u8).add(std::mem::size_of::<ObjectHeader>()) as *const u64;
+            for slot in 0..crate::object::INLINE_SLOT_FLOOR.max(3) {
+                assert_eq!(*fields.add(slot), crate::value::TAG_UNDEFINED);
+            }
+            let receiver = crate::value::js_nanbox_pointer(object as i64);
+            let key = crate::string::js_string_from_bytes(b"#x".as_ptr(), 2);
+            js_private_field_add(
+                receiver,
+                CID,
+                crate::value::js_nanbox_string(key as i64),
+                7.0,
+            );
+            assert_eq!(*fields.add(1), crate::value::TAG_TRUE);
+            assert_eq!(f64::from_bits(*fields.add(2)), 7.0);
+        }
+    }
+
+    #[test]
+    fn reserved_private_method_brand_keeps_field_canonical_shape() {
+        unsafe {
+            const CID: u32 = 62_443;
+            let packed = b"public\0#<perry:private-field:62443:#x>\0#<perry:private-value:62443:#x>\0#<perry:private-brand:62443>\0";
+            let keys = crate::object::js_build_class_keys_array(
+                CID,
+                4,
+                packed.as_ptr(),
+                packed.len() as u32,
+            );
+            let shape = crate::object::shapes::js_object_shape_id_for_keys(keys as u64, 4);
+            let object =
+                crate::object::js_object_alloc_class_inline_keys_stamped(CID, 0, 4, keys, shape);
+            let receiver = crate::value::js_nanbox_pointer(object as i64);
+            js_private_brand_add(receiver, CID);
+            let key = crate::string::js_string_from_bytes(b"#x".as_ptr(), 2);
+            js_private_field_add(
+                receiver,
+                CID,
+                crate::value::js_nanbox_string(key as i64),
+                41.0,
+            );
+            assert_eq!(crate::object::shapes::object_shape_stamp(object), shape);
+            assert_eq!(
+                js_private_slot_admit(
+                    receiver,
+                    f64::from_bits(crate::value::TAG_UNDEFINED),
+                    CID,
+                    CID,
+                    shape,
+                    1
+                ),
+                object as i64
+            );
+            assert_eq!(
+                *((object as *const u8).add(std::mem::size_of::<ObjectHeader>()) as *const u64)
+                    .add(3),
+                crate::value::TAG_TRUE
+            );
+        }
+    }
+
+    #[test]
+    fn private_slot_admission_requires_presence_shape_bounds_and_live_receiver() {
+        unsafe {
+            const CID: u32 = 62_442;
+            let packed =
+                b"public\0#<perry:private-field:62442:#x>\0#<perry:private-value:62442:#x>\0";
+            let keys = crate::object::js_build_class_keys_array(
+                CID,
+                3,
+                packed.as_ptr(),
+                packed.len() as u32,
+            );
+            let shape = crate::object::shapes::js_object_shape_id_for_keys(keys as u64, 3);
+            let object =
+                crate::object::js_object_alloc_class_inline_keys_stamped(CID, 0, 3, keys, shape);
+            let receiver = crate::value::js_nanbox_pointer(object as i64);
+            let owner = f64::from_bits(crate::value::TAG_UNDEFINED);
+            assert_eq!(
+                js_private_slot_admit(receiver, owner, CID, CID, shape, 1),
+                0
+            );
+            crate::object::store_object_field_slot(object, 1, crate::value::TAG_FALSE);
+            assert_eq!(
+                js_private_slot_admit(receiver, owner, CID, CID, shape, 1),
+                0
+            );
+            crate::object::store_object_field_slot(object, 1, crate::value::TAG_TRUE);
+            assert_eq!(
+                js_private_slot_admit(receiver, owner, CID, CID, shape, 1),
+                object as i64
+            );
+            assert_eq!(
+                js_private_slot_admit(receiver, owner, CID, CID + 1, shape, 1),
+                0
+            );
+            assert_eq!(
+                js_private_slot_admit(receiver, owner, CID, CID, shape + 1, 1),
+                0
+            );
+            assert_eq!(
+                js_private_slot_admit(receiver, owner, CID, CID, shape, 2),
+                0
+            );
+            assert_eq!(
+                js_private_slot_admit(receiver, owner, CID, CID, shape, u32::MAX),
+                0
+            );
+            let first = crate::object::js_object_alloc(CID, 0);
+            let second = crate::object::js_object_alloc(CID, 0);
+            crate::object::class_registry::js_object_mark_class(first as i64);
+            crate::object::class_registry::js_object_mark_class(second as i64);
+            let first = crate::value::js_nanbox_pointer(first as i64);
+            let second = crate::value::js_nanbox_pointer(second as i64);
+            stamp_private_evaluation_brand(object, second);
+            assert_eq!(
+                js_private_slot_admit(receiver, first, CID, CID, shape, 1),
+                0
+            );
+            assert_eq!(
+                js_private_slot_admit(receiver, second, CID, CID, shape, 1),
+                object as i64
+            );
+            let header =
+                (object as *mut u8).sub(crate::gc::GC_HEADER_SIZE) as *mut crate::gc::GcHeader;
+            (*header)._reserved &= !crate::gc::GC_OBJ_TYPED_LAYOUT_INTACT;
+            assert_eq!(
+                js_private_slot_admit(receiver, owner, CID, CID, shape, 1),
+                object as i64
+            );
+            (*header).gc_flags |= crate::gc::GC_FLAG_FORWARDED;
+            assert_eq!(
+                js_private_slot_admit(receiver, owner, CID, CID, shape, 1),
+                0
+            );
+            (*header).gc_flags &= !crate::gc::GC_FLAG_FORWARDED;
+            let buffer = crate::buffer::js_buffer_alloc(8, 0);
+            assert_eq!(
+                js_private_slot_admit(
+                    crate::value::js_nanbox_pointer(buffer as i64),
+                    owner,
+                    CID,
+                    CID,
+                    shape,
+                    1
+                ),
+                0
+            );
+            let typed_view = crate::typedarray::typed_array_alloc(0, 8);
+            assert_eq!(
+                js_private_slot_admit(
+                    crate::value::js_nanbox_pointer(typed_view as i64),
+                    owner,
+                    CID,
+                    CID,
+                    shape,
+                    1
+                ),
+                0
+            );
+            // The public ABI accepts foreign storage without any preceding GC header.
+            let foreign_view = [0u64; 8];
+            let foreign_ptr = foreign_view.as_ptr() as *const crate::typedarray::TypedArrayHeader;
+            crate::typedarray::register_typed_array(foreign_ptr, 0);
+            assert_eq!(
+                js_private_slot_admit(
+                    crate::value::js_nanbox_pointer(foreign_ptr as i64),
+                    owner,
+                    CID,
+                    CID,
+                    shape,
+                    1
+                ),
+                0
+            );
+            crate::typedarray::unregister_typed_array(foreign_ptr);
+            assert_eq!(js_private_slot_admit(3.14, owner, CID, CID, shape, 1), 0);
+        }
+    }
 
     #[test]
     fn stamping_a_fresh_brand_preserves_instance_shape_and_slots() {

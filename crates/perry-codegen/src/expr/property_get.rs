@@ -71,6 +71,14 @@ use super::{
 };
 
 pub(crate) fn lower(ctx: &mut FnCtx<'_>, expr: &Expr) -> Result<String> {
+    if let Expr::PropertyGet {
+        object, property, ..
+    } = expr
+    {
+        if let Some(value) = super::private_field::get(ctx, object, property)? {
+            return Ok(value);
+        }
+    }
     // #7219: reading `.buffer` on a tracked typed-array view HANDS OUT ITS
     // STORAGE, so the local's inline-storage proof stops holding from here on.
     //

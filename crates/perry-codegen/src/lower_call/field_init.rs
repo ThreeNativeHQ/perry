@@ -588,6 +588,14 @@ pub(crate) fn apply_field_initializers_recursive(
     };
 
     for class_name_in_chain in chain {
+        // Imported constructors own their complete private initialization phase.
+        if ctx
+            .classes
+            .get(&class_name_in_chain)
+            .is_some_and(|class| class.is_imported_stub())
+        {
+            continue;
+        }
         // Issue #26: prefer the authoritative chain's resolved fields for this
         // class (correct cross-module parent layout); fall back to the
         // name-keyed `ctx.classes` only when no authoritative entry exists.

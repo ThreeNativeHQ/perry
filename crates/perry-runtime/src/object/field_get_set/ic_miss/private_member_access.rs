@@ -373,3 +373,133 @@ fn throw_private_type_error(msg: &str) -> ! {
     let v = crate::value::JSValue::pointer(err as *const u8).bits();
     crate::exception::js_throw(f64::from_bits(v))
 }
+
+/// Admit only an initialized private field in the compiler's exact canonical
+/// ordinary shape. This call cannot allocate or forward the receiver.
+#[no_mangle]
+pub extern "C" fn js_private_slot_admit(
+    receiver: f64,
+    brand_owner: f64,
+    declaring_class_id: u32,
+    concrete_class_id: u32,
+    expected_shape_id: u32,
+    presence_slot: u32,
+) -> i64 {
+    let value = JSValue::from_bits(receiver.to_bits());
+    if !value.is_pointer() || declaring_class_id == 0 || expected_shape_id == 0 {
+        return 0;
+    }
+    let raw = (receiver.to_bits() & crate::value::POINTER_MASK) as usize;
+    if !crate::value::addr_class::is_plausible_heap_addr(raw) {
+        return 0;
+    }
+    // B17 exception windows reject foreign registered storage before any header read.
+    // Debug proof functions assert an already-proven ordinary receiver, so use
+    // the authoritative registries until the ordinary header proof below.
+    #[cfg(debug_assertions)]
+    if crate::buffer::is_registered_buffer(raw)
+        || crate::typedarray::lookup_typed_array_kind(raw).is_some()
+    {
+        return 0;
+    }
+    #[cfg(not(debug_assertions))]
+    if !crate::buffer::ordinary_object_has_no_buffer_brand(raw)
+        || !crate::typedarray::ordinary_object_has_no_typed_array_brand(raw)
+    {
+        return 0;
+    }
+    unsafe {
+        if !crate::value::addr_class::ordinary_object_without_view_brand(raw) {
+            return 0;
+        }
+        let Some(header) = crate::value::addr_class::try_read_gc_header(raw) else {
+            return 0;
+        };
+        if header.obj_type != crate::gc::GC_TYPE_OBJECT
+            || header.gc_flags & crate::gc::GC_FLAG_FORWARDED != 0
+        {
+            return 0;
+        }
+        let object = raw as *const ObjectHeader;
+        if (*object).class_id != concrete_class_id
+            || crate::object::shapes::object_shape_stamp(object) != expected_shape_id
+        {
+            return 0;
+        }
+        let Some(shape) = crate::object::shapes::object_shape_descriptor(object) else {
+            return 0;
+        };
+        if shape.object_kind != crate::object::shapes::ShapeObjectKind::Ordinary
+            || shape.semantic_generation != 0
+            || shape.keys != crate::object::object_keys_array(object) as u64
+            || presence_slot.checked_add(1).is_none_or(|slot| {
+                slot >= shape.logical_key_count
+                    || slot >= shape.live_inline_slot_count
+                    || slot >= crate::object::object_live_slot_count(object)
+            })
+        {
+            return 0;
+        }
+        let slots = (object as *const u8).add(std::mem::size_of::<ObjectHeader>()) as *const u64;
+        if *slots.add(presence_slot as usize) != crate::value::TAG_TRUE {
+            return 0;
+        }
+        // Template identity alone never admits an uninitialized field.
+        if !private_evaluation_brand_matches(receiver, brand_owner, declaring_class_id)
+            .unwrap_or(true)
+        {
+            return 0;
+        }
+        raw as i64
+    }
+}
+
+/// The semantic guard has already proved the private element. Ordinary
+/// property attributes (including freeze) do not govern its hidden value.
+#[no_mangle]
+pub extern "C" fn js_private_field_set_by_property_id(receiver: f64, property_id: i64, value: f64) {
+    let scope = crate::gc::RuntimeHandleScope::new();
+    let receiver = scope.root_nanbox_f64(receiver);
+    let value = scope.root_nanbox_f64(value);
+    let mut scratch = [0u8; crate::value::SHORT_STRING_MAX_LEN];
+    let Some(key_ref) = crate::string::perry_string_ref_from_dispatch_id(property_id, &mut scratch)
+    else {
+        throw_private_type_error("Invalid private storage key");
+    };
+    let key = scope.root_string_ptr(crate::string::materialize_dispatch_key(key_ref));
+    let object = JSValue::from_bits(receiver.get_nanbox_f64().to_bits())
+        .as_pointer::<ObjectHeader>() as *mut ObjectHeader;
+    key.with_const_ptr::<crate::StringHeader, _>(|key| unsafe {
+        let raw = object as usize;
+        // Stamped arrays/functions and foreign buffers/views keep generic storage.
+        // Reject registered foreign storage before touching a possible GC header.
+        let ordinary = !crate::buffer::is_registered_buffer(raw)
+            && crate::typedarray::lookup_typed_array_kind(raw).is_none()
+            && crate::value::addr_class::try_read_gc_header(raw).is_some_and(|header| {
+                header.obj_type == crate::gc::GC_TYPE_OBJECT
+                    && header.gc_flags & crate::gc::GC_FLAG_FORWARDED == 0
+            });
+        if !ordinary {
+            super::js_object_set_field_by_name(object, key, value.get_nanbox_f64());
+            return;
+        }
+        let keys = crate::object::object_keys_array(object);
+        let count = crate::array::keys_array_len_capped_to_capacity(keys) as u32;
+        let Some(slot) = crate::object::keys_find_slot_by_key_ptr(keys, count, key) else {
+            throw_private_type_error("Private field storage is unavailable");
+        };
+        if slot < crate::object::object_live_slot_count(object) {
+            crate::object::store_object_field_slot(
+                object,
+                slot as usize,
+                value.get_nanbox_f64().to_bits(),
+            );
+        } else {
+            crate::object::overflow_set(
+                object as usize,
+                slot as usize,
+                value.get_nanbox_f64().to_bits(),
+            );
+        }
+    });
+}

@@ -539,6 +539,14 @@ pub extern "C" fn js_object_alloc_class_with_keys(
         (*ptr).parent_class_id = parent_class_id;
         // GC_STORE_AUDIT(INIT): fresh object starts with no per-object meta record (#6759 B).
         (*ptr).meta = ptr::null_mut();
+        // Match the inline-keys allocator: every declared or spare slot is
+        // absent until initialized. Reserved private presence slots must not
+        // expose arena zero-fill as an already initialized private element.
+        let fields_ptr = (ptr as *mut u8).add(header_size) as *mut JSValue;
+        for i in 0..alloc_field_count {
+            // GC_STORE_AUDIT(INIT): freshly allocated object slot starts undefined.
+            ptr::write(fields_ptr.add(i), JSValue::undefined());
+        }
         crate::gc::layout_init_pointer_free(ptr as *mut u8);
     }
 

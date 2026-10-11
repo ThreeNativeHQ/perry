@@ -639,6 +639,16 @@ pub(crate) fn emit_nullish_write_guard(
 }
 
 pub(crate) fn lower(ctx: &mut FnCtx<'_>, expr: &Expr) -> Result<String> {
+    if let Expr::PropertySet {
+        object,
+        property,
+        value,
+    } = expr
+    {
+        if let Some(result) = super::private_field::set(ctx, object, property, value)? {
+            return Ok(result);
+        }
+    }
     match expr {
         Expr::PropertySet {
             object,
