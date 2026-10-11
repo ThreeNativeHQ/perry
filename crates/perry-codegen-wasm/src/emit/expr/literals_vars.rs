@@ -81,6 +81,10 @@ impl<'a> FuncEmitCtx<'a> {
             Expr::GlobalGet(id) => {
                 if let Some(&idx) = self.emitter.global_map.get(id) {
                     func.instruction(&Instruction::GlobalGet(idx));
+                } else if *id == 0 {
+                    // HIR's sentinel for globalThis: `Promise`, `document`, ... resolve by name on it.
+                    self.emit_frame_begin(func, 0);
+                    self.emit_memcall(func, "global_this", 0);
                 } else {
                     func.instruction(&Instruction::I64Const(TAG_UNDEFINED as i64));
                 }

@@ -23,7 +23,7 @@ pub mod state_desugar;
 pub mod unroll;
 
 // Re-export main transformation functions
-pub use async_to_generator::transform_async_to_generator;
+pub use async_to_generator::{transform_async_to_generator, transform_async_to_generator_all};
 pub use closure::convert_closures;
 pub use finally_inline::inline_finally_into_returns;
 pub use generator::transform_generators;

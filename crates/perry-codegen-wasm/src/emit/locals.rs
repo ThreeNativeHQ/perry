@@ -128,6 +128,10 @@ pub(super) fn collect_locals(
                     collect_locals(&case.body, map, count, offset);
                 }
             }
+            Stmt::DoWhile { body, .. } => collect_locals(body, map, count, offset),
+            Stmt::Labeled { body, .. } => {
+                collect_locals(std::slice::from_ref(body.as_ref()), map, count, offset)
+            }
             _ => {}
         }
     }

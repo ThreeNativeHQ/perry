@@ -32,7 +32,7 @@ The `perry-codegen-wasm` crate compiles HIR directly to WASM bytecode using `was
 
 - Imports ~280 host functions under the `rt` namespace (string ops, math, console, JSON, classes, closures, promises, fetch, etc.)
 - Imports user-declared FFI functions under the `ffi` namespace
-- Exports `_start`, `memory`, `__indirect_function_table`, and every user function as `__wasm_func_<idx>` (so async function bodies compiled to JS can call back into WASM)
+- Exports `_start`, `memory`, `__indirect_function_table`, and every user function as `__wasm_func_<idx>` (so the host can call back into WASM)
 
 The NaN-boxing scheme matches the native `perry-runtime` — f64 values with STRING_TAG/POINTER_TAG/INT32_TAG — so the same value representation is used across native and WASM targets. The JS bridge wraps every host import with bit-level reinterpretation so f64 NaN-boxed values pass through the BigInt-based JS↔WASM i64 boundary intact (BigInt(NaN) would otherwise throw).
 
@@ -41,7 +41,7 @@ The NaN-boxing scheme matches the native `perry-runtime` — f64 values with STR
 - **Full TypeScript language**: classes (with constructors, methods, getters/setters, inheritance, fields), async/await, closures (with captures), generators, destructuring, template literals, generics, enums, try/catch/finally
 - **Module system**: cross-module imports, top-level `const`/`let` (promoted to WASM globals), circular imports
 - **Standard library**: String/Array/Object methods, Map/Set, JSON, Date, RegExp, Math, Error, URL/URLSearchParams, Buffer, Promise (with `.then`/`.catch`/`.allSettled`/`.race`/`.any`/`.all`)
-- **Async**: `async`/`await` (compiled to JS Promises), `setTimeout`/`setInterval`, `fetch()` with full request options (method, headers, body)
+- **Async**: `async`/`await` (Wasm step closures driven by JS Promises), `setTimeout`/`setInterval`, `fetch()` with full request options (method, headers, body)
 - **Threading**: `perry/thread` `parallelMap`/`parallelFilter`/`spawn` via Web Worker pool with one WASM instance per worker (see [Threading](../threading/overview.md))
 - **DOM-based UI**: every widget in `perry/ui` (`VStack`, `HStack`, `ZStack`, `Text`, `Button`, `TextField`, `Toggle`, `Slider`, `ScrollView`, `Picker`, `Image`, `Canvas`, `Form`, `Section`, `NavigationStack`, `Table`, `LazyVStack`, `TextArea`, etc.) maps to a DOM element with flexbox layout. State bindings (`bindText`/`bindSlider`/`bindToggle`/`bindForEach`/...) work via reactive subscribers.
 - **System APIs**: `localStorage`-backed preferences/keychain, dark mode detection (`prefers-color-scheme`), Web Notifications, clipboard, file open/save dialogs, File System Access API, Web Audio capture
@@ -113,7 +113,7 @@ The bridge (`wasm_runtime.js`) is embedded in the HTML and provides ~280 imports
 - **Closure dispatch**: indirect function table + capture array, with `closure_call_0/1/2/3/spread`
 - **Class dispatch**: `class_new`, `class_call_method`, `class_get_field`, `class_set_field`, parent table for inheritance
 - **DOM widgets**: 168+ `perry_ui_*` functions covering every widget in `perry/ui`
-- **Async functions**: compiled to JS function bodies and merged into the import object as `__async_<name>`
+- **Async functions**: lowered to generator step closures that run in Wasm; the runtime only resolves the Promise between steps
 
 All host imports are wrapped via `wrapImportsForI64()` so they automatically reinterpret BigInt args (from WASM i64 params) into f64 internally and reinterpret Number returns back into BigInt. Without this wrapping, every NaN-valued f64 return would crash with "Cannot convert NaN to a BigInt".
 

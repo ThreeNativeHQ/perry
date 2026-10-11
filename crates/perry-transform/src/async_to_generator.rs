@@ -99,11 +99,24 @@ fn cps_mark_async_fn(func: &mut Function, next_local_id: &mut LocalId) {
     hoist_awaits_in_stmts(&mut func.body, next_local_id);
     rewrite_stmts(&mut func.body, &mut had_await);
     // Without awaits the direct-call path is correct + cheaper; leave is_async.
-    if had_await {
+    if had_await || FORCE_STEP.with(|f| f.get()) {
         func.is_async = false;
         func.is_generator = true;
         func.was_plain_async = true;
     }
+}
+
+thread_local! {
+    static FORCE_STEP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Like [`transform_async_to_generator`], but also routes async functions with no `await`
+/// through the step driver. A target without a direct-call async lowering (the Wasm emitter,
+/// PRD-582) then has no async body left to emit outside Wasm.
+pub fn transform_async_to_generator_all(module: &mut Module) {
+    FORCE_STEP.with(|f| f.set(true));
+    transform_async_to_generator(module);
+    FORCE_STEP.with(|f| f.set(false));
 }
 
 /// Run the pre-pass on every async function in the module.
@@ -410,7 +423,7 @@ fn rewrite_async_closures_in_expr(
             hoist_awaits_in_stmts(body, next_local_id);
             let mut had_await = false;
             rewrite_stmts(body, &mut had_await);
-            if had_await {
+            if had_await || FORCE_STEP.with(|f| f.get()) {
                 let owned_body = std::mem::take(body);
                 let owned_params = params.clone();
                 let owned_captures = captures.clone();

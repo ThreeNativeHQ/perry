@@ -24,10 +24,15 @@ impl<'a> FuncEmitCtx<'a> {
                 {
                     func.instruction(&Instruction::GlobalSet(gidx));
                 } else if let Some(&idx) = self.local_map.get(id) {
-                    if self.is_boxed(id) {
-                        self.emit_box_new(func);
+                    if self.preallocated.contains(id) {
+                        self.emit_box_store(func, idx);
+                        func.instruction(&Instruction::Drop);
+                    } else {
+                        if self.is_boxed(id) {
+                            self.emit_box_new(func);
+                        }
+                        func.instruction(&Instruction::LocalSet(idx));
                     }
-                    func.instruction(&Instruction::LocalSet(idx));
                 } else {
                     func.instruction(&Instruction::Drop);
                 }
@@ -431,7 +436,18 @@ impl<'a> FuncEmitCtx<'a> {
             // Issue #569: Wasm backend has no equivalent of LLVM's
             // alloca'd box slot — JS hoisting in the host runtime handles
             // forward refs natively. Emit nothing.
-            Stmt::PreallocateBoxes(_) | Stmt::PreallocateTdzBoxes(_) | Stmt::ReleaseBoxes(_) => {}
+            // An activation-wide cell the step closures share; a later Let stores into it.
+            Stmt::PreallocateBoxes(ids) | Stmt::PreallocateTdzBoxes(ids) => {
+                for id in ids {
+                    if let (true, Some(&idx)) = (self.is_boxed(id), self.local_map.get(id)) {
+                        func.instruction(&Instruction::I64Const(TAG_UNDEFINED as i64));
+                        self.emit_box_new(func);
+                        func.instruction(&Instruction::LocalSet(idx));
+                        self.preallocated.insert(*id);
+                    }
+                }
+            }
+            Stmt::ReleaseBoxes(_) => {}
         }
     }
 

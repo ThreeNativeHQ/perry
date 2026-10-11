@@ -14,6 +14,7 @@ impl<'a> FuncEmitCtx<'a> {
                 body,
                 captures,
                 mutable_captures,
+                captures_this,
                 ..
             } => {
                 // Compile closure body as a function (it was already registered if it's in module.functions)
@@ -32,12 +33,17 @@ impl<'a> FuncEmitCtx<'a> {
                     self.emit_store_const(func, 1, captures.len() as f64);
                     self.emit_memcall(func, "closure_new", 2);
                     // Set captures
-                    for (i, cap_id) in captures.iter().chain(mutable_captures.iter()).enumerate() {
+                    let this_capture = captures_this.then_some(THIS_CAPTURE);
+                    for (i, cap_id) in
+                        captures.iter().chain(this_capture.iter()).chain(mutable_captures.iter()).enumerate()
+                    {
                         // Duplicate closure handle (it's returned by closure_new)
                         // closure_set_capture(handle, idx, value) -> handle (chaining)
                         func.instruction(&f64_const(i as f64));
                         func.instruction(&Instruction::I64ReinterpretF64);
-                        if let Some(&local_idx) = self.local_map.get(cap_id) {
+                        if *cap_id == THIS_CAPTURE {
+                            self.emit_expr(func, &Expr::This);
+                        } else if let Some(&local_idx) = self.local_map.get(cap_id) {
                             func.instruction(&Instruction::LocalGet(local_idx));
                         } else {
                             func.instruction(&Instruction::I64Const(TAG_UNDEFINED as i64));
@@ -319,8 +325,9 @@ impl<'a> FuncEmitCtx<'a> {
                 }
             }
             Expr::This => {
-                // 'this' is passed as first parameter (local 0) in methods
-                func.instruction(&Instruction::LocalGet(0));
+                // A closure carries `this` as a capture; methods get it as parameter 0.
+                let idx = self.local_map.get(&THIS_CAPTURE).copied().unwrap_or(0);
+                func.instruction(&Instruction::LocalGet(idx));
             }
             Expr::SuperCall(args) => {
                 // Call parent constructor: super(args)
@@ -361,13 +368,9 @@ impl<'a> FuncEmitCtx<'a> {
             }
             Expr::SuperMethodCall { method, args } => {
                 // Call parent method on this via class_call_method (walks parent chain)
-                self.emit_slot_addr(func, 0); // this handle
+                // `this` stays on the value stack until the call frame opens (PRD-582: writing the
+                // slots before the frame wrote them into the caller's frame).
                 func.instruction(&Instruction::LocalGet(0));
-                func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
-                    offset: 0,
-                    align: 3,
-                    memory_index: 0,
-                })); // slot 0 = this (already i64)
                 let method_id = self
                     .emitter
                     .string_map
@@ -375,8 +378,7 @@ impl<'a> FuncEmitCtx<'a> {
                     .copied()
                     .unwrap_or(0);
                 let method_bits = (STRING_TAG << 48) | (method_id as u64);
-                self.emit_store_const(func, 1, f64::from_bits(method_bits)); // slot 1 = method name
-                                                                             // Build args array
+                // Build args array
                 self.emit_frame_begin(func, 0);
                 self.emit_memcall(func, "array_new", 0);
                 for arg in args {
@@ -401,6 +403,12 @@ impl<'a> FuncEmitCtx<'a> {
                     align: 3,
                     memory_index: 0,
                 }));
+                // slot 0 = this (left on the value stack above), slot 1 = method name
+                func.instruction(&Instruction::LocalSet(self.temp_local));
+                self.emit_slot_addr(func, 0);
+                func.instruction(&Instruction::LocalGet(self.temp_local));
+                func.instruction(&Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                self.emit_store_const(func, 1, f64::from_bits(method_bits));
                 self.emit_memcall(func, "class_call_method", 3);
             }
             Expr::ClassRef(_) => {
@@ -497,9 +505,7 @@ impl<'a> FuncEmitCtx<'a> {
                     .copied()
                     .unwrap_or(0);
                 let method_bits = (STRING_TAG << 48) | (method_id as u64);
-                self.emit_store_const(func, 0, f64::from_bits(class_bits)); // slot 0 = class handle
-                self.emit_store_const(func, 1, f64::from_bits(method_bits)); // slot 1 = method name
-                                                                             // Build args array
+                // Build args array
                 self.emit_frame_begin(func, 0);
                 self.emit_memcall(func, "array_new", 0);
                 for arg in args {
@@ -524,6 +530,8 @@ impl<'a> FuncEmitCtx<'a> {
                     align: 3,
                     memory_index: 0,
                 }));
+                self.emit_store_const(func, 0, f64::from_bits(class_bits)); // slot 0 = class handle
+                self.emit_store_const(func, 1, f64::from_bits(method_bits)); // slot 1 = method name
                 self.emit_memcall(func, "class_call_method", 3);
             }
 

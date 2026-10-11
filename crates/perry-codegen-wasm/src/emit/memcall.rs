@@ -28,7 +28,7 @@ impl<'a> FuncEmitCtx<'a> {
             .string_map
             .get(bridge_fn_name)
             .copied()
-            .unwrap_or(0);
+            .unwrap_or_else(|| self.uninterned_bridge(bridge_fn_name));
         let frame_bytes = (self.current_frame_size * 8) as i32;
         // base_addr = sp - frame_size * 8
         func.instruction(&f64_const(func_name_id as f64));
@@ -72,7 +72,7 @@ impl<'a> FuncEmitCtx<'a> {
             .string_map
             .get(bridge_fn_name)
             .copied()
-            .unwrap_or(0);
+            .unwrap_or_else(|| self.uninterned_bridge(bridge_fn_name));
         let frame_bytes = (self.current_frame_size * 8) as i32;
         func.instruction(&f64_const(func_name_id as f64));
         func.instruction(&f64_const(arg_count as f64));
@@ -101,7 +101,7 @@ impl<'a> FuncEmitCtx<'a> {
             .string_map
             .get(bridge_fn_name)
             .copied()
-            .unwrap_or(0);
+            .unwrap_or_else(|| self.uninterned_bridge(bridge_fn_name));
         let frame_bytes = (self.current_frame_size * 8) as i32;
         func.instruction(&f64_const(func_name_id as f64));
         func.instruction(&f64_const(arg_count as f64));
@@ -115,5 +115,12 @@ impl<'a> FuncEmitCtx<'a> {
         func.instruction(&Instruction::I32Sub);
         func.instruction(&Instruction::GlobalSet(sp));
         self.current_frame_size = self.frame_stack.pop().unwrap_or(0);
+    }
+
+    /// A bridge name missing from the intern list would dispatch string 0; record it so the build
+    /// reports (or under PERRY_WASM_STRICT refuses) it.
+    fn uninterned_bridge(&self, name: &str) -> u32 {
+        *self.emitter.unsupported.borrow_mut().entry(format!("UninternedBridge({name})")).or_default() += 1;
+        0
     }
 }

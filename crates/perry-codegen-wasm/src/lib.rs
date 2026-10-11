@@ -238,4 +238,29 @@ mod tests {
             UNMAPPED_MEMCALLS.iter().map(|s| s.to_string()).collect();
         assert_eq!(missing, known, "memcall names without a __memDispatch entry");
     }
+
+    #[test]
+    fn prd582_every_emitted_memcall_name_is_interned() {
+        let emit_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/emit");
+        let interned = std::fs::read_to_string(emit_dir.join("string_collection.rs")).unwrap();
+        let mut source = String::new();
+        for entry in std::fs::read_dir(&emit_dir).unwrap().chain(std::fs::read_dir(emit_dir.join("expr")).unwrap()) {
+            let path = entry.unwrap().path();
+            if path.extension().is_some_and(|e| e == "rs") {
+                source.push_str(&std::fs::read_to_string(path).unwrap());
+            }
+        }
+        let mut missing = Vec::new();
+        for call in source.split("emit_memcall").skip(1) {
+            let mut parts = call.split('"');
+            let head: String = parts.next().unwrap().chars().filter(|c| !c.is_whitespace()).collect();
+            let direct = ["(func,", "_void(func,", "_i32(func,"].contains(&head.as_str());
+            if let (true, Some(name)) = (direct, parts.next()) {
+                if !interned.contains(&format!("\"{name}\"")) {
+                    missing.push(name.to_string());
+                }
+            }
+        }
+        assert!(missing.is_empty(), "memcall names not interned: {missing:?}");
+    }
 }

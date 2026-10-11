@@ -178,13 +178,15 @@ impl<'a> FuncEmitCtx<'a> {
                 true
             }
             "join" => {
+                // The frame must open before slot 0 is written: storing first wrote the receiver
+                // into the caller's frame (PRD-582: `"a " + xs.join(",")` lost "a ").
+                self.emit_frame_begin(func, 2);
                 self.emit_store_arg(func, 0, object);
                 if !args.is_empty() {
                     self.emit_store_arg(func, 1, &args[0]);
                 } else {
                     let comma_id = self.emitter.string_map.get(",").copied().unwrap_or(0);
                     let bits = (STRING_TAG << 48) | (comma_id as u64);
-                    self.emit_frame_begin(func, 2);
                     self.emit_store_const(func, 1, f64::from_bits(bits));
                 }
                 self.emit_memcall(func, "array_join", 2);

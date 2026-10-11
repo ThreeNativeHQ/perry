@@ -258,4 +258,43 @@ impl<'a> FuncEmitCtx<'a> {
         }
         true
     }
+
+    /// The async-step state machine (`transform_async_to_generator` + `transform_generators`):
+    /// the body runs in Wasm step closures; the runtime only chains promises (PRD-582).
+    pub(super) fn try_emit_expr_async_step(&mut self, func: &mut Function, expr: &Expr) -> bool {
+        match expr {
+            Expr::IterResultSet(value, done) => {
+                self.emit_frame_begin(func, 2);
+                self.emit_store_arg(func, 0, value);
+                self.emit_store_const(func, 1, if *done { 1.0 } else { 0.0 });
+                self.emit_memcall(func, "iter_result_set", 2);
+            }
+            Expr::IterResultGetValue => {
+                self.emit_frame_begin(func, 0);
+                self.emit_memcall(func, "iter_result_get_value", 0);
+            }
+            Expr::IterResultGetDone => {
+                self.emit_frame_begin(func, 0);
+                self.emit_memcall(func, "iter_result_get_done", 0);
+            }
+            Expr::CurrentStepClosure => {
+                self.emit_frame_begin(func, 0);
+                self.emit_memcall(func, "current_step_closure", 0);
+            }
+            Expr::AsyncFirstCall { step_closure } => {
+                self.emit_frame_begin(func, 1);
+                self.emit_store_arg(func, 0, step_closure);
+                self.emit_memcall(func, "async_first_call", 1);
+            }
+            Expr::AsyncStepChain { value, step_closure } | Expr::AsyncStepDone { value, step_closure } => {
+                let name = if matches!(expr, Expr::AsyncStepChain { .. }) { "async_step_chain" } else { "async_step_done" };
+                self.emit_frame_begin(func, 2);
+                self.emit_store_arg(func, 0, value);
+                self.emit_store_arg(func, 1, step_closure);
+                self.emit_memcall(func, name, 2);
+            }
+            _ => return false,
+        }
+        true
+    }
 }

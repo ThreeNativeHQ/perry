@@ -1608,6 +1608,25 @@ const classParentTable = {};
 // Core bridge dispatch table — maps bridge function names to their implementations.
 // Args are decoded from NaN-boxed BigInt bits to plain JS values by __bitsToJsValue before dispatch.
 // Return values are plain JS values, converted back to BigInt bits by __jsValueToBits in mem_call.
+let __iterValue, __iterDone = false, __currentStep;
+// Runs one step of an async function with the step visible to CurrentStepClosure, and turns
+// an exception the Wasm body left pending into a JS throw so the chained promise rejects.
+function __runStep(step, value, isError) {
+  const prev = __currentStep;
+  __currentStep = step;
+  try {
+    const result = callWasmClosure(step, value, isError);
+    if (currentException !== null) {
+      const e = currentException;
+      currentException = null;
+      throw e;
+    }
+    return result;
+  } finally {
+    __currentStep = prev;
+  }
+}
+
 const __memDispatch = {
   // Console — args are already decoded by __bitsToJsValue
   console_log: (val) => { console.log(val); },
@@ -1631,6 +1650,7 @@ const __memDispatch = {
     return 1;
   },
   js_strict_eq: (a, b) => a === b ? 1 : 0,
+  js_loose_eq: (a, b) => a == b ? 1 : 0,
 
   // Math
   math_floor: (x) => Math.floor(x),
@@ -2114,6 +2134,18 @@ const __memDispatch = {
   try_start: () => { tryDepth++; },
   try_end: () => { if (tryDepth > 0) tryDepth--; },
   throw_value: (val) => { currentException = val; },
+  // Async-step state machine (PRD-582): the step closures are Wasm; this only chains promises.
+  iter_result_set: (value, done) => { __iterValue = value; __iterDone = !!done; return undefined; },
+  iter_result_get_value: () => __iterValue,
+  iter_result_get_done: () => __iterDone,
+  current_step_closure: () => __currentStep,
+  global_this: () => globalThis,
+  async_first_call: (step) => __runStep(step, undefined, false),
+  async_step_chain: (value, step) => Promise.resolve(value).then(
+    (v) => __runStep(step, v, false),
+    (e) => __runStep(step, e, true),
+  ),
+  async_step_done: (value) => Promise.resolve(value),
   has_exception: () => currentException !== null ? 1 : 0,
   get_exception: () => { const e = currentException; currentException = null; return e !== null ? e : undefined; },
 
@@ -4864,6 +4896,12 @@ const __uiMethodMap = {
   addOverlay: "perry_ui_widget_add_overlay",
 };
 
+function __hostCallback(v) {
+  return v && typeof v === 'object' && typeof v.funcIdx !== 'undefined'
+    ? (...args) => callWasmClosure(v, ...args)
+    : v;
+}
+
 function __classDispatch(objVal, mname, rawArgs) {
   // objVal and rawArgs are already plain JS values (decoded by __bitsToJsValue in mem_call)
   // Primitive/built-in fast-path (Issue #133 item 1): plain strings/numbers have no
@@ -4899,10 +4937,11 @@ function __classDispatch(objVal, mname, rawArgs) {
       cls = classParentTable[cls] || null;
     }
   }
-  // 1b) A field that holds a Perry closure or a host function: `obj.fn(...)` (PRD-582).
-  if (objVal && typeof objVal === 'object') {
+  // 1b) A field that holds a Perry closure or a host function: `obj.fn(...)`, `Promise.resolve(v)`.
+  if (objVal && (typeof objVal === 'object' || typeof objVal === 'function')) {
     const field = objVal[mname];
-    if (typeof field === 'function') return field.apply(objVal, rawArgs);
+    // A host method (Promise#then, Map#forEach, ...) gets Perry closures as JS functions.
+    if (typeof field === 'function') return field.apply(objVal, rawArgs.map(__hostCallback));
     if (field && typeof field === 'object' && typeof field.funcIdx !== 'undefined') {
       return callWasmClosure(field, ...rawArgs);
     }

@@ -98,6 +98,10 @@ pub(super) fn collect_closures_from_stmts(
     }
 }
 
+/// Capture id that stands for the enclosing `this` of a closure with `captures_this`; a closure
+/// reads `this` from this parameter instead of local 0 (PRD-582).
+pub(super) const THIS_CAPTURE: LocalId = LocalId::MAX;
+
 /// Recursively collect Expr::Closure from an expression tree. Descends through
 /// `perry_hir::walker`, which is exhaustive over `Expr`: a hand-written match here
 /// missed closures inside template literals, method-call args and array pushes, so
@@ -112,16 +116,16 @@ pub(super) fn collect_closures_from_expr(
         body,
         captures,
         mutable_captures,
+        captures_this,
         ..
     } = expr
     {
-        out.push((
-            *func_id,
-            params.clone(),
-            body.clone(),
-            captures.clone(),
-            mutable_captures.clone(),
-        ));
+        // `this` rides as one more capture, after the plain captures (see THIS_CAPTURE).
+        let mut captures = captures.clone();
+        if *captures_this {
+            captures.push(THIS_CAPTURE);
+        }
+        out.push((*func_id, params.clone(), body.clone(), captures, mutable_captures.clone()));
         collect_closures_from_stmts(body, out);
     }
     perry_hir::walker::walk_expr_children(expr, &mut |child| collect_closures_from_expr(child, out));

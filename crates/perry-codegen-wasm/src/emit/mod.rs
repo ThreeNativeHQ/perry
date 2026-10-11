@@ -50,7 +50,7 @@ use wasm_encoder::{
 
 // Explicit named re-exports of cross-sibling items. Sub-modules with
 // `use super::*;` see these names at module scope.
-use closures::{collect_closures_from_expr, collect_closures_from_stmts};
+use closures::{collect_closures_from_expr, collect_closures_from_stmts, THIS_CAPTURE};
 // `f64_const_bits` is held alive for future use (matches the pre-split
 // `#[allow(dead_code)]` annotation on its original definition).
 use constants::{
@@ -78,8 +78,7 @@ pub struct WasmCompileOutput {
 
 /// Compile HIR modules to a WebAssembly binary.
 pub fn compile_to_wasm(modules: &[(String, perry_hir::ir::Module)]) -> Vec<u8> {
-    let mut emitter = WasmModuleEmitter::new();
-    emitter.compile(modules).wasm_bytes
+    compile_to_wasm_with_async(modules).wasm_bytes
 }
 
 /// Compile HIR modules to WASM binary + generated JS for async functions.
@@ -87,5 +86,77 @@ pub fn compile_to_wasm_with_async(
     modules: &[(String, perry_hir::ir::Module)],
 ) -> WasmCompileOutput {
     let mut emitter = WasmModuleEmitter::new();
-    emitter.compile(modules)
+    emitter.compile(&with_implicit_constructors(modules))
+}
+
+/// The emitter runs field initializers only inside a compiled constructor, so a class without
+/// one never initialized `x = 1` fields (PRD-582). Give such a class the implicit constructor:
+/// empty for a base class, `constructor(a, b) { super(a, b) }` with the parent's arity for a
+/// derived class whose parent is in the graph.
+// ponytail: derived classes forward the parent's declared arity, not `...args`; spread when needed.
+fn with_implicit_constructors(
+    modules: &[(String, perry_hir::ir::Module)],
+) -> Vec<(String, perry_hir::ir::Module)> {
+    let mut modules = modules.to_vec();
+    let mut arity: BTreeMap<String, usize> = modules
+        .iter()
+        .flat_map(|(_, m)| &m.classes)
+        .filter_map(|c| Some((c.name.clone(), c.constructor.as_ref()?.params.len())))
+        .collect();
+    {
+        for (_, module) in &mut modules {
+            for class in &mut module.classes {
+                if class.constructor.is_some() {
+                    continue;
+                }
+                let has_inits = class.fields.iter().any(|f| f.init.is_some());
+                let parent = class.extends_name.as_ref().or(class.native_extends.as_ref().map(|n| &n.0));
+                let params: Vec<Param> = match parent {
+                    None if has_inits => Vec::new(),
+                    Some(name) if class.native_extends.is_none() && class.extends_expr.is_none() => {
+                        // A parent without any constructor takes no arguments.
+                        let n = arity.get(name).copied().unwrap_or(0);
+                        if n == 0 && !has_inits && !arity.contains_key(name) {
+                            continue;
+                        }
+                        (0..n)
+                            .map(|i| Param {
+                                id: THIS_CAPTURE - 1 - i as LocalId,
+                                name: format!("__arg{i}"),
+                                ty: perry_hir::types::Type::Any,
+                                default: None,
+                                decorators: Vec::new(),
+                                is_rest: false,
+                                arguments_object: None,
+                            })
+                            .collect()
+                    }
+                    _ => continue,
+                };
+                let body = if parent.is_some() {
+                    vec![Stmt::Expr(Expr::SuperCall(params.iter().map(|p| Expr::LocalGet(p.id)).collect()))]
+                } else {
+                    Vec::new()
+                };
+                arity.insert(class.name.clone(), params.len());
+                class.constructor = Some(perry_hir::ir::Function {
+                    id: FuncId::MAX,
+                    name: "constructor".into(),
+                    type_params: Vec::new(),
+                    params,
+                    return_type: perry_hir::types::Type::Void,
+                    body,
+                    is_async: false,
+                    is_generator: false,
+                    is_strict: true,
+                    is_exported: false,
+                    captures: Vec::new(),
+                    decorators: Vec::new(),
+                    was_plain_async: false,
+                    was_unrolled: false,
+                });
+            }
+        }
+    }
+    modules
 }

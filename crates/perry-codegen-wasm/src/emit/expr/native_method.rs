@@ -898,19 +898,8 @@ impl<'a> FuncEmitCtx<'a> {
                                         .unwrap_or(0);
                                     // obj is already on the stack from emit_expr(obj) above
                                     // Save obj to temp, build args array, then store all to memory
-                                    func.instruction(&Instruction::LocalSet(self.temp_local)); // slot 0 = obj handle
-                                    self.emit_slot_addr(func, 0);
-                                    func.instruction(&Instruction::LocalGet(self.temp_local));
-                                    func.instruction(&Instruction::I64Store(
-                                        wasm_encoder::MemArg {
-                                            offset: 0,
-                                            align: 3,
-                                            memory_index: 0,
-                                        },
-                                    ));
+                                    // obj stays on the value stack until the call frame opens
                                     let method_bits = (STRING_TAG << 48) | (method_id as u64);
-                                    self.emit_store_const(func, 1, f64::from_bits(method_bits)); // slot 1 = method name
-                                                                                                 // Build args array
                                     self.emit_frame_begin(func, 0);
                                     self.emit_memcall(func, "array_new", 0); // get new array handle
                                     for arg in args {
@@ -940,6 +929,12 @@ impl<'a> FuncEmitCtx<'a> {
                                             memory_index: 0,
                                         },
                                     ));
+                                    // slot 0 = obj (left on the value stack above), slot 1 = method name
+                                    func.instruction(&Instruction::LocalSet(self.temp_local));
+                                    self.emit_slot_addr(func, 0);
+                                    func.instruction(&Instruction::LocalGet(self.temp_local));
+                                    func.instruction(&Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                                    self.emit_store_const(func, 1, f64::from_bits(method_bits));
                                     self.emit_memcall(func, "class_call_method", 3);
                                 }
                             }
