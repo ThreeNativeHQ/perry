@@ -975,16 +975,62 @@ pub(crate) fn class_own_symbol_member_keys(class_id: u32, is_static: bool) -> Ve
             }
         }
     });
+    // Well-known Symbol members the lowering renames to a synthetic vtable
+    // slot (`@@toPrimitive`, ...) or lifts to a registered hook never reach
+    // the two tables above. They are still own Symbol-keyed members, ordered
+    // by the definition order the renamed method registered under.
+    let mut slot_orders: Vec<(usize, u32)> = Vec::new();
+    let slot_order = |name: &str| {
+        CLASS_STRING_MEMBER_ORDERS
+            .read()
+            .ok()
+            .and_then(|g| g.as_ref()?.get(&(class_id, false, name.to_string())).copied())
+            .filter(|order| *order != u32::MAX)
+    };
+    let own_method = |name: &str| {
+        CLASS_VTABLE_REGISTRY
+            .read()
+            .ok()
+            .and_then(|reg| reg.as_ref()?.get(&class_id).map(|vt| vt.methods.contains_key(name)))
+            .unwrap_or(false)
+    };
+    let lifted: &[(&str, &str, bool)] = if is_static {
+        &[("hasInstance", "", crate::object::lookup_has_instance_hook(class_id).is_some())]
+    } else {
+        &[
+            ("toPrimitive", "@@toPrimitive", own_method("@@toPrimitive")),
+            ("asyncIterator", "@@asyncIterator", own_method("@@asyncIterator")),
+            ("dispose", "__perry_dispose__", own_method("__perry_dispose__")),
+            ("asyncDispose", "__perry_async_dispose__", own_method("__perry_async_dispose__")),
+            ("toStringTag", "", crate::object::lookup_to_string_tag_hook(class_id).is_some()),
+        ]
+    };
+    for &(wk, slot, present) in lifted {
+        let sym = crate::symbol::well_known_symbol(wk);
+        if present && !sym.is_null() && !keys.contains(&(sym as usize)) {
+            keys.push(sym as usize);
+            if let Some(order) = slot_order(slot) {
+                slot_orders.push((sym as usize, order));
+            }
+        }
+    }
     keys.sort_by_key(|sym_key| unsafe {
         let ptr = *sym_key as *const crate::symbol::SymbolHeader;
         let symbol_id = if ptr.is_null() { u64::MAX } else { (*ptr).id };
-        let definition_order = CLASS_SYMBOL_MEMBER_ORDERS.with(|orders| {
-            orders.read().ok().and_then(|guard| {
-                guard
-                    .as_ref()
-                    .and_then(|map| map.get(&(class_id, symbol_id, is_static)).copied())
+        let definition_order = CLASS_SYMBOL_MEMBER_ORDERS
+            .with(|orders| {
+                orders.read().ok().and_then(|guard| {
+                    guard
+                        .as_ref()
+                        .and_then(|map| map.get(&(class_id, symbol_id, is_static)).copied())
+                })
             })
-        });
+            .or_else(|| {
+                slot_orders
+                    .iter()
+                    .find(|(key, _)| key == sym_key)
+                    .map(|(_, order)| *order)
+            });
         if let Some(order) = definition_order {
             (0u8, order, symbol_id)
         } else {
