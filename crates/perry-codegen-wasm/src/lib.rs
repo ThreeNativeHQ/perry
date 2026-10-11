@@ -24,6 +24,7 @@ pub fn compile_modules_to_wasm_html(
     let output = emit::compile_to_wasm_with_async(modules);
     validate_wasm(&output.wasm_bytes)?;
     check_unsupported(&output.unsupported)?;
+    check_no_async_js(&output.async_js)?;
     let wasm_b64 = BASE64.encode(&output.wasm_bytes);
 
     let runtime_js = if minify {
@@ -32,12 +33,6 @@ pub fn compile_modules_to_wasm_html(
         WASM_RUNTIME_JS.to_string()
     };
 
-    // If there are async functions, inject them into the runtime
-    let async_inject = if output.async_js.is_empty() {
-        String::new()
-    } else {
-        format!("\n// === Generated async function implementations ===\nconst __asyncFuncImpls = {{\n{}\n}};\n", output.async_js)
-    };
 
     // If there are FFI imports, generate a comment listing them for the host to provide
     let ffi_comment = if output.ffi_imports.is_empty() {
@@ -65,7 +60,7 @@ pub fn compile_modules_to_wasm_html(
 <body>
   <div id="perry-root"></div>
   <script>
-{runtime_js}{async_inject}{ffi_comment}
+{runtime_js}{ffi_comment}
   </script>
   <script>
 window.__perryWasmB64 = "{wasm_b64}";
@@ -78,7 +73,6 @@ bootPerryWasm("{wasm_b64}").catch(e => {{
 </html>"#,
         title = html_escape(title),
         runtime_js = runtime_js,
-        async_inject = async_inject,
         ffi_comment = ffi_comment,
         wasm_b64 = wasm_b64,
     );
@@ -97,6 +91,7 @@ pub fn compile_modules_to_wasm(modules: &[(String, Module)]) -> Result<Vec<u8>> 
     let output = emit::compile_to_wasm_with_async(modules);
     validate_wasm(&output.wasm_bytes)?;
     check_unsupported(&output.unsupported)?;
+    check_no_async_js(&output.async_js)?;
     Ok(output.wasm_bytes)
 }
 
@@ -113,6 +108,16 @@ fn check_unsupported(unsupported: &[(String, usize)]) -> Result<()> {
     }
     eprintln!("Warning: {message}");
     Ok(())
+}
+
+/// Async bodies run as Wasm step closures; one left for the JS translator would ship game code
+/// as JS, so it fails the build (PRD-582).
+fn check_no_async_js(async_js: &str) -> Result<()> {
+    if async_js.is_empty() {
+        return Ok(());
+    }
+    let first = async_js.lines().next().unwrap_or_default();
+    anyhow::bail!("PERRY_WASM_ASYNC_JS: an async body was not lowered to Wasm: {first}")
 }
 
 fn validate_wasm(bytes: &[u8]) -> Result<()> {
@@ -175,6 +180,14 @@ mod tests {
         module.section(&code);
         let error = super::validate_wasm(&module.finish()).unwrap_err();
         assert!(error.to_string().contains("PERRY_WASM_INVALID"));
+    }
+
+    #[test]
+    fn prd582_async_body_left_as_js_fails_the_build() {
+        assert!(super::check_no_async_js("").is_ok());
+        let error = super::check_no_async_js("__async_load: function(n) {}").unwrap_err();
+        assert!(error.to_string().contains("PERRY_WASM_ASYNC_JS"));
+        assert!(!WASM_RUNTIME_JS.contains("__asyncFuncImpls"));
     }
 
     #[test]

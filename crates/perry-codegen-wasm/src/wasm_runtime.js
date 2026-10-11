@@ -1426,9 +1426,6 @@ function buildImports() {
         if (!fn) return 0;
         return fn(...args) | 0;
       },
-
-      // Async function implementations (merged from generated code)
-      ...(typeof __asyncFuncImpls !== 'undefined' ? __asyncFuncImpls : {}),
     },
     // FFI namespace: external native functions (e.g., bloom_init_window, bloom_draw_rect)
     // Wrapped in Proxy so a missing import fails instantiation by name instead of
