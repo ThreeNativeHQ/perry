@@ -612,3 +612,107 @@ fn test_copied_minor_finreg_promoted_live_target_not_collected() {
          reported collected by a copied minor"
     );
 }
+
+#[test]
+fn weakmap_lookup_work_is_bounded_at_10000_keys() {
+    let _guard = CopyingNurseryTestGuard::new(1);
+    let _triggers = GcTriggerThresholdTestGuard::suppress_automatic_triggers();
+    let scope = crate::gc::RuntimeHandleScope::new();
+    let map = scope.root_raw_mut_ptr(crate::weakref::js_weakmap_new());
+    let mut keys = Vec::new();
+    for i in 0..10000 {
+        let key = scope.root_raw_mut_ptr(crate::object::js_object_alloc(0, 0));
+        crate::weakref::js_weakmap_set(
+            f64::from_bits(obj_bits(map.get_raw_mut_ptr())),
+            f64::from_bits(obj_bits(key.get_raw_mut_ptr())),
+            i as f64,
+        );
+        keys.push(key);
+    }
+    crate::weakref::test_support::take_key_probes();
+    let m = f64::from_bits(obj_bits(map.get_raw_mut_ptr()));
+    let k = f64::from_bits(obj_bits(keys[9999].get_raw_mut_ptr()));
+    assert_eq!(crate::weakref::js_weakmap_get(m, k), 9999.0);
+    assert_eq!(
+        crate::weakref::js_weakmap_has(m, k).to_bits(),
+        crate::value::TAG_TRUE
+    );
+    crate::weakref::js_weakmap_set(m, k, 17.0);
+    assert_eq!(crate::weakref::js_weakmap_get(m, k), 17.0);
+    let probes = crate::weakref::test_support::take_key_probes();
+    assert!(probes <= 8, "four lookups visited {probes} entries");
+}
+
+#[test]
+fn weakmap_index_survives_minor_major_moves_and_drops_dead_keys() {
+    const COUNT: u32 = 100;
+    let _guard = CopyingNurseryTestGuard::new(COUNT + 1);
+    let _triggers = GcTriggerThresholdTestGuard::suppress_automatic_triggers();
+    js_shadow_slot_set(0, obj_bits(crate::weakref::js_weakmap_new()));
+    for i in 1..=COUNT {
+        js_shadow_slot_set(i, obj_bits(crate::object::js_object_alloc(0, 0)));
+        crate::weakref::js_weakmap_set(
+            f64::from_bits(js_shadow_slot_get(0)),
+            f64::from_bits(js_shadow_slot_get(i)),
+            i as f64,
+        );
+    }
+    let original_key = js_shadow_slot_get(1);
+    for cycle in 0..8 {
+        // Populate the cache before every collection so relocation must invalidate it.
+        assert_eq!(
+            crate::weakref::js_weakmap_get(
+                f64::from_bits(js_shadow_slot_get(0)),
+                f64::from_bits(js_shadow_slot_get(COUNT))
+            ),
+            COUNT as f64
+        );
+        let trace = collect_minor_trace(GcTriggerKind::Direct);
+        if cycle == 0 {
+            assert_copied_minor_trace(&trace, true, CopiedMinorFallbackReason::None, false);
+            assert_ne!(
+                js_shadow_slot_get(1),
+                original_key,
+                "key must actually move"
+            );
+        }
+        for i in 1..=COUNT {
+            assert_eq!(
+                crate::weakref::js_weakmap_get(
+                    f64::from_bits(js_shadow_slot_get(0)),
+                    f64::from_bits(js_shadow_slot_get(i))
+                ),
+                i as f64
+            );
+        }
+    }
+    // Drop half the tenured keys; the index must not keep them alive in a major.
+    for i in 1..=COUNT / 2 {
+        js_shadow_slot_set(i, crate::value::TAG_UNDEFINED);
+    }
+    gc_collect_full_mark_sweep_with_trigger(GcTriggerSnapshot::capture(GcTriggerKind::Direct));
+    let map = (js_shadow_slot_get(0) & POINTER_MASK) as *const crate::ObjectHeader;
+    assert_eq!(
+        crate::weakref::weak_collection_entries(map).len(),
+        (COUNT / 2) as usize
+    );
+    for i in COUNT / 2 + 1..=COUNT {
+        let m = f64::from_bits(js_shadow_slot_get(0));
+        let k = f64::from_bits(js_shadow_slot_get(i));
+        assert_eq!(crate::weakref::js_weakmap_get(m, k), i as f64);
+        assert_eq!(
+            crate::weakref::js_weakmap_delete(m, k).to_bits(),
+            crate::value::TAG_TRUE
+        );
+        assert_eq!(
+            crate::weakref::js_weakmap_has(m, k).to_bits(),
+            crate::value::TAG_FALSE
+        );
+        crate::weakref::js_weakmap_set(m, k, 7.0);
+        assert_eq!(crate::weakref::js_weakmap_get(m, k), 7.0);
+    }
+    assert_eq!(
+        crate::weakref::weak_collection_entries(map).len(),
+        (COUNT / 2) as usize
+    );
+}

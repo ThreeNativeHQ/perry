@@ -35,6 +35,7 @@ pub(crate) fn note_full_weak_processing_work_unit() {
 }
 
 pub(crate) fn clear_weak_holders() {
+    super::invalidate_weak_indexes();
     WEAK_HOLDERS.with(|holders| holders.borrow_mut().clear());
 }
 
@@ -49,4 +50,12 @@ pub(crate) fn register_weak_holder_address(addr: usize) {
     WEAK_HOLDERS.with(|holders| {
         holders.borrow_mut().insert(addr);
     });
+}
+
+thread_local! { static KEY_PROBES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+pub(crate) fn note_key_probe() {
+    KEY_PROBES.with(|p| p.set(p.get() + 1));
+}
+pub(crate) fn take_key_probes() -> usize {
+    KEY_PROBES.with(|p| p.replace(0))
 }
