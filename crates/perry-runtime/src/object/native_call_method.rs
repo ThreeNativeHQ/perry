@@ -1177,6 +1177,15 @@ pub unsafe extern "C-unwind" fn js_native_call_method(
     args_ptr: *const f64,
     args_len: usize,
 ) -> f64 {
+    if let Some(result) = crate::object::weakref_proto_thunks::try_plain_weak_method_fast(
+        object,
+        method_name_ptr,
+        method_name_len,
+        args_ptr,
+        args_len,
+    ) {
+        return result;
+    }
     if !method_name_ptr.is_null() && method_name_len > 0 {
         let method_name_bytes =
             std::slice::from_raw_parts(method_name_ptr as *const u8, method_name_len);

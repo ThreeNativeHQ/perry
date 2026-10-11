@@ -55,6 +55,57 @@ thread_local! {
     static WEAK_DISPATCH_PROBES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
+/// B24: the head of `js_native_call_method` for a plain weak wrapper. A
+/// WeakMap/WeakSet/WeakRef/FinalizationRegistry reached through a class field,
+/// a map value or a capture the HIR fold cannot name otherwise walks every
+/// dispatcher (vtable, prototype, primitive, string, handle, collection)
+/// before the weak arm near the tail. Only an exact reserved class id with no
+/// metadata record (no custom prototype, descriptor or accessor) and no own
+/// key qualifies, so a subclass or an instance carrying its own `get`/`deref`
+/// still resolves through the full tower; everything else answers `None`.
+///
+/// # Safety
+/// `method_name_ptr`/`args_ptr` describe the caller's live buffers.
+#[inline]
+pub unsafe fn try_plain_weak_method_fast(
+    receiver: f64,
+    method_name_ptr: *const i8,
+    method_name_len: usize,
+    args_ptr: *const f64,
+    args_len: usize,
+) -> Option<f64> {
+    if !(3..=10).contains(&method_name_len) || method_name_ptr.is_null() {
+        return None;
+    }
+    if crate::weakref::WEAK_METHOD_DISPATCH_USED.is_idle() {
+        return None;
+    }
+    let jsval = crate::value::JSValue::from_bits(receiver.to_bits());
+    if !jsval.is_pointer() {
+        return None;
+    }
+    let addr = crate::value::js_nanbox_get_pointer(receiver) as usize;
+    match crate::value::addr_class::try_read_gc_header(addr) {
+        Some(header) if header.obj_type == crate::gc::GC_TYPE_OBJECT => {}
+        _ => return None,
+    }
+    let obj = addr as *const ObjectHeader;
+    if !matches!(
+        (*obj).class_id,
+        CLASS_ID_WEAKMAP | CLASS_ID_WEAKSET | CLASS_ID_WEAKREF | CLASS_ID_FINALIZATION_REGISTRY
+    ) || !(*obj).meta.is_null()
+    {
+        return None;
+    }
+    let keys = super::object_keys_array(obj);
+    if !keys.is_null() && (*keys).length != 0 {
+        return None;
+    }
+    let bytes = std::slice::from_raw_parts(method_name_ptr as *const u8, method_name_len);
+    let name = std::str::from_utf8(bytes).ok()?;
+    try_weak_method_dispatch(obj, receiver, name, args_ptr, args_len)
+}
+
 /// Dynamic-dispatch entry point for weak-wrapper method calls (issues
 /// #1757/#1758 for WeakMap/WeakSet, #7947 for WeakRef/FinalizationRegistry).
 /// `js_native_call_method` calls this for any heap object; it returns
