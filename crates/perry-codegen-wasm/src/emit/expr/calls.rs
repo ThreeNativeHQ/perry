@@ -414,14 +414,7 @@ impl<'a> FuncEmitCtx<'a> {
                 self.emit_bridge(func, "typed_array_new", &[&Box::new(name), &arg]);
             }
             Expr::CallSpread { callee, args, .. } => {
-                let elements = args
-                    .iter()
-                    .map(|a| match a {
-                        perry_hir::ir::CallArg::Expr(e) => perry_hir::ir::ArrayElement::Expr(e.clone()),
-                        perry_hir::ir::CallArg::Spread(e) => perry_hir::ir::ArrayElement::Spread(e.clone()),
-                    })
-                    .collect();
-                let args = Box::new(Expr::ArraySpread(elements));
+                let args = Box::new(Expr::ArraySpread(spread_elements(args)));
                 match callee.as_ref() {
                     // `obj.m(...xs)` keeps its receiver.
                     Expr::PropertyGet { object, property, .. } => {
@@ -431,6 +424,52 @@ impl<'a> FuncEmitCtx<'a> {
                     _ => self.emit_bridge(func, "call_spread", &[callee, &args]),
                 }
             }
+            Expr::ObjectCreate(proto, props) => {
+                let props = props.clone().unwrap_or_else(|| Box::new(Expr::Undefined));
+                self.emit_bridge(func, "object_create", &[proto, &props])
+            }
+            Expr::ObjectSetPrototypeOf(o, p) => self.emit_bridge(func, "object_set_prototype_of", &[o, p]),
+            Expr::ObjectDefineProperties(o, d) => self.emit_bridge(func, "object_define_properties", &[o, d]),
+            Expr::ObjectGetOwnPropertyNames(o) => self.emit_bridge(func, "object_get_own_property_names", &[o]),
+            Expr::ObjectIs(a, b) => self.emit_bridge(func, "object_is", &[a, b]),
+            Expr::ReflectSet { target, key, value, receiver } => {
+                self.emit_bridge(func, "reflect_set", &[target, key, value, receiver])
+            }
+            Expr::EncodeURIComponent(s) => self.emit_bridge(func, "encode_uri_component", &[s]),
+            Expr::DecodeURIComponent(s) => self.emit_bridge(func, "decode_uri_component", &[s]),
+            Expr::TextEncoderEncode(s) => self.emit_bridge(func, "text_encoder_encode", &[s]),
+            // ponytail: UTF-8 only; honour the decoder's label when a program decodes another.
+            Expr::TextDecoderDecode { input, .. } => self.emit_bridge(func, "text_decoder_decode", &[input]),
+            Expr::RegExpExec { regex, string } => self.emit_bridge(func, "regexp_exec", &[regex, string]),
+            Expr::RegExpDynamic { pattern, flags, .. } => {
+                let flags = flags.clone().unwrap_or_else(|| Box::new(Expr::String(String::new())));
+                self.emit_bridge(func, "regexp_new", &[pattern, &flags])
+            }
+            Expr::ProxyNew { target, handler } => self.emit_bridge(func, "proxy_new", &[target, handler]),
+            Expr::ProxyGet { proxy, key } => self.emit_bridge(func, "reflect_get", &[proxy, key, proxy]),
+            Expr::RefreshClassExprCaptures { class_value, captures } => {
+                let captures = Box::new(Expr::Array(captures.clone()));
+                self.emit_bridge(func, "class_captures_refresh", &[class_value, &captures])
+            }
+            Expr::NewDynamicSpread { callee, args, .. } => {
+                let args = Box::new(Expr::ArraySpread(spread_elements(args)));
+                self.emit_bridge(func, "new_dynamic", &[callee, &args]);
+            }
+            Expr::SuperCallSpread(args) => {
+                // `super(...xs)`: the parent's registered constructor runs on this instance.
+                let parent = self
+                    .current_class
+                    .as_ref()
+                    .and_then(|c| self.emitter.class_parent_map.get(c))
+                    .cloned()
+                    .unwrap_or_default();
+                let parent = Box::new(Expr::String(parent));
+                let args = Box::new(Expr::ArraySpread(spread_elements(args)));
+                self.emit_bridge(func, "super_call_spread", &[&Box::new(Expr::This), &parent, &args]);
+            }
+            Expr::ArrayAt { array, index } => self.emit_bridge(func, "array_at", &[array, index]),
+            // ponytail: the declared type does not shape the parse; plain JSON.parse semantics.
+            Expr::JsonParseTyped { text, .. } => self.emit_bridge(func, "json_parse", &[text]),
             Expr::PerformanceNow => self.emit_bridge(func, "performance_now", &[]),
             Expr::MathLog(x) => self.emit_bridge(func, "math_log", &[x]),
             Expr::MathMaxSpread(xs) => self.emit_bridge(func, "math_max_spread", &[xs]),
@@ -507,4 +546,14 @@ impl<'a> FuncEmitCtx<'a> {
         }
         true
     }
+}
+
+/// Call arguments as array-literal elements, spreads kept.
+fn spread_elements(args: &[perry_hir::ir::CallArg]) -> Vec<perry_hir::ir::ArrayElement> {
+    args.iter()
+        .map(|a| match a {
+            perry_hir::ir::CallArg::Expr(e) => perry_hir::ir::ArrayElement::Expr(e.clone()),
+            perry_hir::ir::CallArg::Spread(e) => perry_hir::ir::ArrayElement::Spread(e.clone()),
+        })
+        .collect()
 }

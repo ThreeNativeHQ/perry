@@ -2166,6 +2166,32 @@ const __memDispatch = {
   global_this: () => globalThis,
   for_of_next: (it) => __classDispatch(it, 'next', []),
   current_this: () => __callThis,
+  array_at: (a, i) => (Array.isArray(a) || typeof a === 'string' || ArrayBuffer.isView(a)) ? a.at(i) : undefined,
+  object_create: (proto, props) => Object.create(proto, props),
+  object_set_prototype_of: (o, p) => Object.setPrototypeOf(o, p),
+  object_define_properties: (o, d) => {
+    for (const k of Object.keys(d)) __memDispatch.object_define_property(o, k, d[k]);
+    return o;
+  },
+  object_get_own_property_names: (o) => Object.getOwnPropertyNames(o).filter((k) => k !== '__class__'),
+  object_is: (a, b) => Object.is(a, b),
+  reflect_set: (t, k, v, r) => r === undefined ? Reflect.set(t, k, v) : Reflect.set(t, k, v, r),
+  encode_uri_component: (s) => encodeURIComponent(s),
+  decode_uri_component: (s) => decodeURIComponent(s),
+  text_encoder_encode: (s) => new TextEncoder().encode(s),
+  text_decoder_decode: (bytes) => new TextDecoder().decode(bytes),
+  regexp_exec: (re, s) => re.exec(s),
+  proxy_new: (target, handler) => {
+    const traps = {};
+    for (const k of Object.keys(handler)) traps[k] = __hostCallback(handler[k]);
+    return new Proxy(target, traps);
+  },
+  class_captures_refresh: (cls, values) => { if (cls && cls.__perryClass) __classCaptures[cls.__perryClass] = values; },
+  super_call_spread: (self, parent, args) => {
+    const idx = __classCtors[String(parent)];
+    const fn = idx === undefined ? undefined : wasmInstance.exports.__indirect_function_table.get(idx);
+    if (fn) fn(__jsValueToBits(self), ...__padBigintArgs(fn, 1, args.map((v) => __jsValueToBits(v))));
+  },
   typed_array_new: (name, arg) => new globalThis[name](arg),
   call_spread: (callee, args) => {
     if (typeof callee === 'function') return callee(...args.map(__hostCallback));
@@ -2192,7 +2218,7 @@ const __memDispatch = {
     for (const k in o) if (k !== '__class__' && !k.startsWith('__perry_cap_')) keys.push(k);
     return keys;
   },
-  reflect_get: (t, k, r) => Reflect.get(t, k, r),
+  reflect_get: (t, k, r) => r === undefined ? Reflect.get(t, k) : Reflect.get(t, k, r),
   reflect_delete: (t, k) => Reflect.deleteProperty(t, k),
   // `class C extends <expr>`: a class value names its parent; a host parent is ignored.
   // ponytail: extending a host class (Error, Array) keeps no host behaviour.
